@@ -23,6 +23,7 @@ class Video_Fitter(object):
                  forced_crop=[False, (0, 0, 0, 0)],
                  fixed_params=['n_m', 'mpp', 'lamb'],
                  detection_method='oat',
+                 feature_extent=(201, 201),
                  minmass=35.0,
                  linked_df=None):
         """
@@ -42,7 +43,8 @@ class Video_Fitter(object):
         """
         self.init_processing(fn, background_fn, forced_crop)
         self.init_fitter(guesses, fixed_params)
-        self.init_localization(linked_df, detection_method, minmass)
+        self.init_localization(linked_df, detection_method, minmass,
+                               feature_extent=feature_extent)
 
     def init_processing(self, fn, background_fn, forced_crop):
         self.fn = os.path.expanduser(fn)
@@ -58,11 +60,13 @@ class Video_Fitter(object):
         else:
             self.forced_crop = forced_crop[1]
 
-    def init_localization(self, linked_df, detection_method, minmass):
+    def init_localization(self, linked_df, detection_method, minmass,
+                          feature_extent=None):
         if linked_df is None:
             self.linked_df = self.localize(self.fn,
                                            method=detection_method,
-                                           minmass=minmass)
+                                           minmass=minmass,
+                                           feature_extent=feature_extent)
         else:
             self.linked_df = linked_df
         self.trajectories = self.separate(self.linked_df)
@@ -99,7 +103,7 @@ class Video_Fitter(object):
                 self.fitter.set_param(key, new_params[key])
             self._params = self.fitter.p.valuesdict()
 
-    def localize(self, video, method='oat', minmass=30.0):
+    def localize(self, video, method='oat', minmass=30.0, feature_extent=None):
         '''
         Returns DataFrame of particle parameters in each frame
         of a video linked with their trajectory index
@@ -130,7 +134,8 @@ class Video_Fitter(object):
                 tf = tracker.tracker()
                 features = tf.predict(edit.inflate(norm))
             elif method == 'oat':
-                features, circ = self.oat(norm, frame_no, minmass=minmass)
+                features, circ = self.oat(norm, frame_no, minmass=minmass,
+                                          feature_extent=feature_extent)
             else:
                 raise(ValueError("method must be either \'oat\' or \'tf\'"))
             # Add features to total dataset.
@@ -147,9 +152,12 @@ class Video_Fitter(object):
                             pos_columns=['y', 'x'])
         return linked_df
 
-    def fit(self, trajectory):
+    def fit(self, trajectory, fixed_guess={'x': None, 'y': None,
+                                           'z': None, 'a_p': None, 'n_p': None,
+                                           'n_m': None, 'lamb': None,
+                                           'mpp': None}):
         '''
-        Sets DataFrame of fitted parameters in each frame
+        None DataFrame of fitted parameters in each frame
         for a given trajectory.
         
         Args:
@@ -186,6 +194,9 @@ class Video_Fitter(object):
             print(self.fn[-7:-4] + " time to fit frame " + str(frame_no) +
                   ": " + str(fit_time))
             print("Fit RedChiSq: " + str(fit.redchi))
+            print("Fit z: " + str(fit.params['z'].value))
+            print("Fit a_p, n_p: {}, {}".format(fit.params['a_p'].value,
+                                                fit.params['n_p'].value))
             # Add fit to dataset
             for key in data.keys():
                 if key == 'x':
@@ -202,7 +213,10 @@ class Video_Fitter(object):
             # Set guesses for next fit
             guesses = []
             for param in fit.params.values():
-                guesses.append(param.value)
+                if fixed_guess[param.name] is not None:
+                    guesses.append(fixed_guess[param.name])
+                else:
+                    guesses.append(param.value)
             self.params = guesses
         cap.release()
         self.fit_dfs[trajectory] = pd.DataFrame(data=data)
@@ -234,7 +248,7 @@ class Video_Fitter(object):
             result.append(trajectories[trajectories.particle == idx])
         return result
 
-    def oat(self, frame, frame_no, feature_size=(201, 201), minmass=30.0):
+    def oat(self, frame, frame_no, feature_extent=None, minmass=30.0):
         '''
         Use the orientational alignment transform
         on every pixel of an image and return features.'''
@@ -245,8 +259,14 @@ class Video_Fitter(object):
         feats = tp.locate(circ,
                           31, minmass=minmass,
                           engine='numba')
-        feats['w'] = feature_size[0]
-        feats['h'] = feature_size[1]
+        if feature_extent is None:
+            w, h = 201, 201
+            feats['w'] = w
+            feats['h'] = h
+        else:
+            print('its working')
+            feats['w'] = feature_extent[0]
+            feats['h'] = feature_extent[1]
         features = np.array(feats[['x', 'y', 'w', 'h']])
         print("Time to find {} features at frame {}: {}".format(features.shape[0],
                                                                 frame_no,
