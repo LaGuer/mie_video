@@ -5,7 +5,7 @@ import pandas as pd
 import trackpy as tp
 import cv2
 from tracker import tracker
-from mie_video.editing import inflate
+from mie_video.editing import inflate, crop
 import pylab as pl
 from matplotlib import animation
 from matplotlib.patches import Rectangle
@@ -14,80 +14,25 @@ import features.circletransform as ct
 from time import time
 
 
-def localize(video, method='tf', background=None, dark_count=31):
+def oat(frame, frame_no, feature_size=(201, 201), minmass=26.0):
     '''
-    Returns DataFrame of particle parameters in each frame
-    of a video linked with their trajectory index
-    
-    Args:
-        video: video filename
-    Keywords:
-        background: background image for normalization
-        dark_count: dark count of camera
-    '''
-    if method == 'tf':
-        trk = tracker.tracker()
-    # Create VideoCapture to read video
-    cap = cv2.VideoCapture(video)
-    # Initialize components to build overall dataset.
-    frame_no = 0
-    data = []
-    while(cap.isOpened()):
-        ret, image = cap.read()
-        if ret is False:
-            break
-        image = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
-        # Normalize image
-        if background is not None:
-            image = (image - dark_count) / (background - dark_count)
-        # Find features in each frame
-        if method == 'tf':
-            features = trk.predict(inflate(image))
-        elif method == 'oat':
-            features, circ = oat(image, frame_no)
-        else:
-            raise(ValueError("method must be either \'oat\' or \'tf\'"))
-        for feature in features:
-            # Build dataset over all frames.
-            feature = np.append(feature, frame_no)
-            data.append(feature)
-        # Advance frame_no
-        frame_no += 1
-    cap.release()
-    # Put data set in DataFrame and link
-    result_df = pd.DataFrame(columns=['x', 'y', 'w', 'h', 'frame'], data=data)
-    linked_df = tp.link(result_df, search_range=5, pos_columns=['y', 'x'])
-    return linked_df
-
-
-def oat(frame, frame_no):
-    '''
-    Use the orientational alignment transform 
+    Use the orientational alignment transform
     on every pixel of an image and return features.'''
     t = time()
     circ = ct.circletransform(frame, theory='orientTrans')
+    circ = circ / np.amax(circ)
     circ = h5.TagArray(circ, frame_no)
-    features = tp.locate(circ, 31, minmass=5.0, engine='numba')
-    features['w'] = 301
-    features['h'] = 301
-    features = np.array(features[['x', 'y', 'w', 'h']])
+    feats = tp.locate(circ,
+                      31, minmass=minmass,
+                      engine='numba')
+    feats['w'] = feature_size[0]
+    feats['h'] = feature_size[1]
+    features = np.array(feats[['x', 'y', 'w', 'h']])
     print("Time to find {} features at frame {}: {}".format(features.shape[0],
-                                                            , frame_no
+                                                            frame_no,
                                                             time() - t))
+    print("Mass of particles: {}".format(list(feats['mass'])))
     return features, circ
-
-
-def separate(trajectories):
-    '''
-    Returns list of separated DataFrames for each particle
-    
-    Args:
-        trajectories: Pandas DataFrame linked by trackpy.link(df)
-    '''
-    result = []
-    for idx in range(int(trajectories.particle.max()) + 1):
-        result.append(trajectories[trajectories.particle == idx])
-    return result
 
 
 class Animate(object):
@@ -95,7 +40,7 @@ class Animate(object):
     """
 
     def __init__(self, video, method='oat', transform=True,
-                 dest='animation/test_mpl_anim_oat.avi', **kwargs):
+                 dest='animation/test_mpl_anim_oat.avi', bg=None, **kwargs):
         self.frame_no = 0
         self.transform = transform
         self.video = video
@@ -109,11 +54,14 @@ class Animate(object):
         self.rects = None
         if self.method == 'tf':
             self.trk = tracker.tracker()
+        self.bg = bg
 
     def run(self):
         ret, frame = self.cap.read()
+        frame = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+        if self.bg is not None:
+            frame = (frame.astype(float) - 13) / (self.bg - 13)
         if self.transform:
-            frame = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
             features, frame = oat(frame, self.frame_no)
         if ret:
             self.im = self.ax.imshow(frame, interpolation='none',
@@ -129,17 +77,23 @@ class Animate(object):
         ret = False
         while not ret:
             ret, frame = self.cap.read()
+        frame = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+        if self.bg is not None:
+            frame = (frame.astype(float) - 13) / (self.bg - 13)
         self.im.set_data(frame)
         return self.im,
 
     def anim(self, i):
         ret, frame = self.cap.read()
+        frame = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+        if self.bg is not None:
+            frame = (frame.astype(float) - 13) / (self.bg - 13)
+        self.frame_no += 1
         if ret:
             if self.method == 'tf':
-                features = self.trk.predict(frame)
+                features = self.trk.predict(inflate(frame))
             elif self.method == 'oat':
-                frame_gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-                features, frame_ct = oat(frame_gray, self.frame_no)
+                features, frame_ct = oat(frame, self.frame_no)
             else:
                 raise(ValueError("method must be either \'oat\' or \'tf\'"))
             if self.rects is not None:
@@ -153,11 +107,10 @@ class Animate(object):
                                  fill=False, linewidth=3, edgecolor='r')
                 self.rects.append(rect)
                 self.ax.add_patch(rect)
-        if self.transform:
-            self.im.set_array(frame_ct)
-        else:
-            self.im.set_array(frame)
-        self.frame_no += 1
+            if self.transform:
+                self.im.set_array(frame_ct)
+            else:
+                self.im.set_array(frame)
         return self.im,
 
 

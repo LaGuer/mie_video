@@ -65,9 +65,9 @@ def inflate(image):
     return new_image
 
 
-def crop(image, xc, yc, w, h):
+def crop(image, xc, yc, w, h, square=True):
     '''
-    Returns a square, cropped image.
+    Returns a cropped image.
     
     Args:
         image: image to be cropped
@@ -80,10 +80,11 @@ def crop(image, xc, yc, w, h):
                           int(xc - w//2): int(xc + w//2)].astype(float)
     cropped_image /= np.mean(cropped_image)
     xdim, ydim = cropped_image.shape
-    if xdim == ydim:
-        return cropped_image
-    if xdim > ydim:
-        cropped_image = cropped_image[1:-1, :]
-    else:
-        cropped_image = cropped_image[:, 1:-1]
+    if square is True:
+        if xdim == ydim:
+            return cropped_image
+        if xdim > ydim:
+            cropped_image = cropped_image[1:-1, :]
+        else:
+            cropped_image = cropped_image[:, 1:-1]
     return cropped_image
