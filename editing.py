@@ -17,7 +17,7 @@ def background(fn, shape=(640, 480)):
             of size shape
     '''
     count = count_frames(fn)
-    n_frames = min(count, 100)
+    n_frames = min(count, 200)
     frames = np.zeros((n_frames, shape[0], shape[1]),
                       dtype=np.float_)
     frame_nos = range(count)

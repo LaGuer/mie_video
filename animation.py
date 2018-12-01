@@ -14,25 +14,54 @@ import features.circletransform as ct
 from time import time
 
 
-def oat(frame, frame_no, feature_size=(201, 201), minmass=26.0):
+def oat(norm, frame_no, minmass=30.0, nfringes=25,
+        diameter=100, topn=None):
     '''
     Use the orientational alignment transform
     on every pixel of an image and return features.'''
     t = time()
-    circ = ct.circletransform(frame, theory='orientTrans')
+    circ = ct.circletransform(norm, theory='orientTrans')
     circ = circ / np.amax(circ)
     circ = h5.TagArray(circ, frame_no)
     feats = tp.locate(circ,
-                      31, minmass=minmass,
-                      engine='numba')
-    feats['w'] = feature_size[0]
-    feats['h'] = feature_size[1]
+                      diameter,
+                      minmass=minmass,
+                      engine='numba',
+                      topn=topn)
+    feats['w'] = 400
+    feats['h'] = 400
     features = np.array(feats[['x', 'y', 'w', 'h']])
+    for idx, feature in enumerate(features):
+        s = feature_extent(norm, (feature[0], feature[1]))
+        features[idx][2] = s
+        features[idx][3] = s
     print("Time to find {} features at frame {}: {}".format(features.shape[0],
                                                             frame_no,
                                                             time() - t))
     print("Mass of particles: {}".format(list(feats['mass'])))
     return features, circ
+
+
+def feature_extent(norm, center, nfringes=20, maxrange=350):
+    ravg, rstd = aziavg(norm, center)
+    b = ravg - 1.
+    ndx = np.where(np.diff(np.sign(b)))[0] + 1.
+    if len(ndx) <= nfringes:
+        return maxrange
+    else:
+        return float(ndx[nfringes])+30
+
+
+def aziavg(data, center):
+    x_p, y_p = center
+    y, x = np.indices((data.shape))
+    d = data.ravel()
+    r = np.hypot(x - x_p, y - y_p).astype(np.int).ravel()
+    nr = np.bincount(r)
+    ravg = np.bincount(r, d) / nr
+    avg = ravg[r]
+    rstd = np.sqrt(np.bincount(r, (d - avg)**2) / nr)
+    return ravg, rstd
 
 
 class Animate(object):

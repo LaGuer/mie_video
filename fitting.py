@@ -23,8 +23,8 @@ class Video_Fitter(object):
                  forced_crop=[False, (0, 0, 0, 0)],
                  fixed_params=['n_m', 'mpp', 'lamb'],
                  detection_method='oat',
-                 feature_extent=(201, 201),
                  minmass=35.0,
+                 diameter=51,
                  linked_df=None):
         """
         Args:
@@ -43,8 +43,7 @@ class Video_Fitter(object):
         """
         self.init_processing(fn, background_fn, forced_crop)
         self.init_fitter(guesses, fixed_params)
-        self.init_localization(linked_df, detection_method, minmass,
-                               feature_extent=feature_extent)
+        self.init_localization(linked_df, detection_method, minmass, diameter)
 
     def init_processing(self, fn, background_fn, forced_crop):
         self.fn = os.path.expanduser(fn)
@@ -61,12 +60,11 @@ class Video_Fitter(object):
             self.forced_crop = forced_crop[1]
 
     def init_localization(self, linked_df, detection_method, minmass,
-                          feature_extent=None):
+                          diameter):
         if linked_df is None:
             self.linked_df = self.localize(self.fn,
                                            method=detection_method,
-                                           minmass=minmass,
-                                           feature_extent=feature_extent)
+                                           minmass=minmass, diameter=diameter)
         else:
             self.linked_df = linked_df
         self.trajectories = self.separate(self.linked_df)
@@ -103,7 +101,7 @@ class Video_Fitter(object):
                 self.fitter.set_param(key, new_params[key])
             self._params = self.fitter.p.valuesdict()
 
-    def localize(self, video, method='oat', minmass=30.0, feature_extent=None):
+    def localize(self, video, method='oat', diameter=51, minmass=30.0):
         '''
         Returns DataFrame of particle parameters in each frame
         of a video linked with their trajectory index
@@ -135,7 +133,7 @@ class Video_Fitter(object):
                 features = tf.predict(edit.inflate(norm))
             elif method == 'oat':
                 features, circ = self.oat(norm, frame_no, minmass=minmass,
-                                          feature_extent=feature_extent)
+                                          diameter=diameter)
             else:
                 raise(ValueError("method must be either \'oat\' or \'tf\'"))
             # Add features to total dataset.
@@ -248,31 +246,51 @@ class Video_Fitter(object):
             result.append(trajectories[trajectories.particle == idx])
         return result
 
-    def oat(self, frame, frame_no, feature_extent=None, minmass=30.0):
-        '''
-        Use the orientational alignment transform
+    def oat(self, norm, frame_no, minmass=30.0, nfringes=25,
+            diameter=100):
+        '''Use the orientational alignment transform
         on every pixel of an image and return features.'''
         t = time()
-        circ = ct.circletransform(frame, theory='orientTrans')
+        circ = ct.circletransform(norm, theory='orientTrans')
         circ = circ / np.amax(circ)
         circ = h5.TagArray(circ, frame_no)
         feats = tp.locate(circ,
-                          31, minmass=minmass,
-                          engine='numba')
-        if feature_extent is None:
-            w, h = 201, 201
-            feats['w'] = w
-            feats['h'] = h
-        else:
-            print('its working')
-            feats['w'] = feature_extent[0]
-            feats['h'] = feature_extent[1]
+                          diameter,
+                          minmass=minmass,
+                          engine='numba',
+                          topn=1)
+        feats['w'] = 400
+        feats['h'] = 400
         features = np.array(feats[['x', 'y', 'w', 'h']])
+        for idx, feature in enumerate(features):
+            s = self.feature_extent(norm, (feature[0], feature[1]))
+            features[idx][2] = s
+            features[idx][3] = s
         print("Time to find {} features at frame {}: {}".format(features.shape[0],
                                                                 frame_no,
                                                                 time() - t))
         print("Mass of particles: {}".format(list(feats['mass'])))
         return features, circ
+
+    def feature_extent(self, norm, center, nfringes=20, maxrange=350):
+        ravg, rstd = self.aziavg(norm, center)
+        b = ravg - 1.
+        ndx = np.where(np.diff(np.sign(b)))[0] + 1.
+        if len(ndx) <= nfringes:
+            return maxrange
+        else:
+            return float(ndx[nfringes])+30
+
+    def aziavg(self, data, center):
+        x_p, y_p = center
+        y, x = np.indices((data.shape))
+        d = data.ravel()
+        r = np.hypot(x - x_p, y - y_p).astype(np.int).ravel()
+        nr = np.bincount(r)
+        ravg = np.bincount(r, d) / nr
+        avg = ravg[r]
+        rstd = np.sqrt(np.bincount(r, (d - avg)**2) / nr)
+        return ravg, rstd
 
     def test(self, guesses, trajectory=0, frame_no=0):
         '''
