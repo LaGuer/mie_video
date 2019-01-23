@@ -26,8 +26,7 @@ def oat(norm, frame_no, minmass=30.0, nfringes=25,
     feats = tp.locate(circ,
                       diameter,
                       minmass=minmass,
-                      engine='numba',
-                      topn=topn)
+                      engine='numba', topn=topn, max_iterations=35)
     feats['w'] = 400
     feats['h'] = 400
     features = np.array(feats[['x', 'y', 'w', 'h']])
@@ -42,14 +41,14 @@ def oat(norm, frame_no, minmass=30.0, nfringes=25,
     return features, circ
 
 
-def feature_extent(norm, center, nfringes=20, maxrange=350):
+def feature_extent(norm, center, nfringes=20, maxrange=550.):
     ravg, rstd = aziavg(norm, center)
     b = ravg - 1.
     ndx = np.where(np.diff(np.sign(b)))[0] + 1.
     if len(ndx) <= nfringes:
         return maxrange
     else:
-        return float(ndx[nfringes])+30
+        return float(ndx[nfringes])
 
 
 def aziavg(data, center):

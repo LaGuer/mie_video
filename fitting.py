@@ -19,13 +19,10 @@ import features.circletransform as ct
 class Video_Fitter(object):
 
     def __init__(self, fn, guesses,
+                 background=None,
                  background_fn=None,
-                 forced_crop=[False, (0, 0, 0, 0)],
-                 fixed_params=['n_m', 'mpp', 'lamb'],
-                 detection_method='oat',
-                 minmass=35.0,
-                 diameter=51,
-                 linked_df=None):
+                 linked_df=None,
+                 detection_method='oat'):
         """
         Args:
             fn: filename
@@ -41,40 +38,43 @@ class Video_Fitter(object):
             minmass: minimum brightness for 'oat' detection
             linked_df: input if linked_df has already been calculated and saved
         """
-        self.init_processing(fn, background_fn, forced_crop)
-        self.init_fitter(guesses, fixed_params)
-        self.init_localization(linked_df, detection_method, minmass, diameter)
+        self.init_processing(fn, background_fn, background)
+        self.init_fitting(guesses)
+        self.init_localization(linked_df, detection_method)
 
-    def init_processing(self, fn, background_fn, forced_crop):
+    def init_processing(self, fn, background_fn, background):
         self.fn = os.path.expanduser(fn)
         self.dark_count = 13
         self.frame_size = (1024, 1280)
+        self.forced_crop = None
         if background_fn is not None:
+            if background is not None:
+                s = "No passing both background video filename and background image"
+                raise ValueError(s)
             self.background = edit.background(background_fn,
                                               shape=self.frame_size)
         else:
-            self.background = None
-        if forced_crop[0] is False:
-            self.forced_crop = None
-        else:
-            self.forced_crop = forced_crop[1]
+            self.background = background
 
-    def init_localization(self, linked_df, detection_method, minmass,
-                          diameter):
-        if linked_df is None:
-            self.linked_df = self.localize(self.fn,
-                                           method=detection_method,
-                                           minmass=minmass, diameter=diameter)
-        else:
-            self.linked_df = linked_df
-        self.trajectories = self.separate(self.linked_df)
-        self.fit_dfs = [None for _ in range(len(self.trajectories))]
-        print(str(len(self.trajectories)) + " trajectories found.")
+    def init_localization(self, linked_df, detection_method):
+        self.detection_method = detection_method
+        self.linked_df = linked_df
+        self.trajectories = None
+        if self.detection_method == 'oat':
+            self.nfringes = 25
+            self.maxrange = 550.
+            self.tp_params = {'diameter': 51, 'topn': 1}
+            self.crop_thresh = 300
+        if self.linked_df is not None:
+            self.trajectories = self.separate(self.linked_df)
+            self.fit_dfs = [None for _ in range(len(self.trajectories))]
+            print(str(len(self.trajectories)) + " trajectories found.")
 
-    def init_fitter(self, guesses, fixed_params):
+    def init_fitting(self, guesses):
+        self._fixed_params = ['n_m', 'mpp', 'lamb']
         self._params = OrderedDict(zip(['x', 'y', 'z', 'a_p',
                                         'n_p', 'n_m', 'mpp', 'lamb'], guesses))
-        self.fitter = Mie_Fitter(self.params, fixed=fixed_params)
+        self.fitter = Mie_Fitter(self.params, fixed=self.fixed_params)
 
     @property
     def params(self):
@@ -101,7 +101,16 @@ class Video_Fitter(object):
                 self.fitter.set_param(key, new_params[key])
             self._params = self.fitter.p.valuesdict()
 
-    def localize(self, video, method='oat', diameter=51, minmass=30.0):
+    @property
+    def fixed_params(self):
+        return self._fixed_params
+
+    @fixed_params.setter
+    def fixed_params(self, params):
+        self._fixed_params = params
+        self.fitter = Mie_Fitter(self.params, fixed=self._fixed_params)
+
+    def localize(self, max_frames=None):
         '''
         Returns DataFrame of particle parameters in each frame
         of a video linked with their trajectory index
@@ -113,12 +122,16 @@ class Video_Fitter(object):
             dark_count: dark count of camera
             minmass: min brightness for oat detection 
         '''
+        if self.linked_df is not None:
+            return
         # Create VideoCapture to read video
-        cap = cv2.VideoCapture(video)
+        cap = cv2.VideoCapture(self.fn)
         # Initialize components to build overall dataset.
         frame_no = 0
         data = []
         while(cap.isOpened()):
+            if frame_no == max_frames:
+                break
             # Get frame
             ret, frame = cap.read()
             if ret is False:
@@ -128,12 +141,11 @@ class Video_Fitter(object):
             # Crop if feature of interest is there in all frames
             norm = self.force_crop(norm)
             # Find features in current frame
-            if method == 'tf':
+            if self.detection_method == 'tf':
                 tf = tracker.tracker()
                 features = tf.predict(edit.inflate(norm))
-            elif method == 'oat':
-                features, circ = self.oat(norm, frame_no, minmass=minmass,
-                                          diameter=diameter)
+            elif self.detection_method == 'oat':
+                features, circ = self.oat(norm, frame_no)
             else:
                 raise(ValueError("method must be either \'oat\' or \'tf\'"))
             # Add features to total dataset.
@@ -146,14 +158,19 @@ class Video_Fitter(object):
         # Put data set in DataFrame and link
         result_df = pd.DataFrame(columns=['x', 'y', 'w', 'h', 'frame'],
                                  data=data)
-        linked_df = tp.link(result_df, search_range=20, memory=3,
-                            pos_columns=['y', 'x'])
-        return linked_df
+        self.linked_df = tp.link(result_df, search_range=20, memory=3,
+                                 pos_columns=['y', 'x'])
+        self.trajectories = self.separate(self.linked_df)
+        self.fit_dfs = [None for _ in range(len(self.trajectories))]
+        print(str(len(self.trajectories)) + " trajectories found.")
 
-    def fit(self, trajectory, fixed_guess={'x': None, 'y': None,
-                                           'z': None, 'a_p': None, 'n_p': None,
-                                           'n_m': None, 'lamb': None,
-                                           'mpp': None}):
+    def fit(self,
+            trajectory,
+            fixed_guess={'x': None, 'y': None,
+                         'z': None, 'a_p': None, 'n_p': None,
+                         'n_m': None, 'lamb': None,
+                         'mpp': None},
+            max_frames=None):
         '''
         None DataFrame of fitted parameters in each frame
         for a given trajectory.
@@ -170,6 +187,8 @@ class Video_Fitter(object):
             data['frame'] = []
             data['redchi'] = []
         while(cap.isOpened()):
+            if frame_no == max_frames:
+                break
             ret, frame = cap.read()
             if ret is False:
                 break
@@ -246,8 +265,7 @@ class Video_Fitter(object):
             result.append(trajectories[trajectories.particle == idx])
         return result
 
-    def oat(self, norm, frame_no, minmass=30.0, nfringes=25,
-            diameter=100):
+    def oat(self, norm, frame_no):
         '''Use the orientational alignment transform
         on every pixel of an image and return features.'''
         t = time()
@@ -255,31 +273,34 @@ class Video_Fitter(object):
         circ = circ / np.amax(circ)
         circ = h5.TagArray(circ, frame_no)
         feats = tp.locate(circ,
-                          diameter,
-                          minmass=minmass,
                           engine='numba',
-                          topn=1)
+                          **self.tp_params)
         feats['w'] = 400
         feats['h'] = 400
         features = np.array(feats[['x', 'y', 'w', 'h']])
+        s = None
         for idx, feature in enumerate(features):
             s = self.feature_extent(norm, (feature[0], feature[1]))
+            if self.crop_thresh is not None:
+                if s > self.crop_thresh:
+                    s = self.crop_thresh
             features[idx][2] = s
             features[idx][3] = s
         print("Time to find {} features at frame {}: {}".format(features.shape[0],
                                                                 frame_no,
                                                                 time() - t))
         print("Mass of particles: {}".format(list(feats['mass'])))
+        print("Side length: {}".format(s))
         return features, circ
 
-    def feature_extent(self, norm, center, nfringes=20, maxrange=350):
+    def feature_extent(self, norm, center):
         ravg, rstd = self.aziavg(norm, center)
         b = ravg - 1.
         ndx = np.where(np.diff(np.sign(b)))[0] + 1.
-        if len(ndx) <= nfringes:
-            return maxrange
+        if len(ndx) <= self.nfringes:
+            return self.maxrange
         else:
-            return float(ndx[nfringes])+30
+            return float(ndx[self.nfringes])
 
     def aziavg(self, data, center):
         x_p, y_p = center
