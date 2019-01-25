@@ -92,5 +92,8 @@ class Animate(object):
 if __name__ == '__main__':
     import sys
     args = sys.argv
-    anim = Animate(args[1])
+    if len(args) > 1:
+        anim = Animate(args[1])
+    else:
+        anim = Animate("animation/example.avi")
     anim.run()
