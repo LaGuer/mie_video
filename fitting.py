@@ -40,20 +40,30 @@ class VideoFitter(object):
         self.init_localization(linked_df, detection_method)
 
     def init_processing(self, fn, background_fn, background):
+        """
+        Initialize parameters for files, cropping, and background.
+        Change these parameters before localizing for best/preferred results.
+        """
         self.fn = os.path.expanduser(fn)
         self.dark_count = 13
         self.frame_size = (1024, 1280)
         self.forced_crop = None
         if background_fn is not None:
             if background is not None:
-                s = "No passing both background video filename and background image"
-                raise ValueError(s)
+                raise ValueError("No passing both background video filename and background image")
             self.background = edit.background(background_fn,
                                               shape=self.frame_size)
         else:
             self.background = background
 
     def init_localization(self, linked_df, detection_method):
+        """
+        Initialize parameters for detection.
+
+        If using the orientational alignment transform, 
+        adjust parameters nfringes, maxrange, tp_params, and
+        crop_thresh as needed.
+        """
         self.detection_method = detection_method
         self.linked_df = linked_df
         self.trajectories = None
@@ -68,6 +78,9 @@ class VideoFitter(object):
             print(str(len(self.trajectories)) + " trajectories found.")
                 
     def init_fitting(self, guesses):
+        """
+        Initialize parameters for fitting.
+        """
         self._fixed_params = ['n_m', 'mpp', 'lamb']
         self._params = OrderedDict(zip(['x', 'y', 'z', 'a_p',
                                         'n_p', 'n_m', 'mpp', 'lamb'], guesses))
@@ -104,10 +117,13 @@ class VideoFitter(object):
 
     @fixed_params.setter
     def fixed_params(self, params):
+        """
+        Set fixed parameters for fitting
+        """
         self._fixed_params = params
         self.fitter = Mie_Fitter(self.params, fixed=self._fixed_params)
 
-    def localize(self, max_frames=None):
+    def localize(self, max_frame=None):
         '''
         Returns DataFrame of particle parameters in each frame
         of a video linked with their trajectory index
@@ -122,7 +138,7 @@ class VideoFitter(object):
         data = []
         while(cap.isOpened()):
             try:
-                if frame_no == max_frames:
+                if frame_no == max_frame:
                     break
                 # Get frame
                 ret, frame = cap.read()
@@ -160,21 +176,15 @@ class VideoFitter(object):
         self.fit_dfs = [None for _ in range(len(self.trajectories))]
         print(str(len(self.trajectories)) + " trajectories found.")
 
-    def fit(self,
-            trajectory,
-            fixed_guess={'x': None, 'y': None,
-                         'z': None, 'a_p': None, 'n_p': None,
-                         'n_m': None, 'lamb': None,
-                         'mpp': None},
-            max_frames=None):
+    def fit(self, trajectory_no, max_frame=None):
         '''
         None DataFrame of fitted parameters in each frame
         for a given trajectory.
         
         Args:
-            trajectory: index of particle trajectory in self.trajectories.
+            trajectory_no: index of particle trajectory in self.trajectories.
         '''
-        p_df = self.trajectories[trajectory]
+        p_df = self.trajectories[trajectory_no]
         cap = cv2.VideoCapture(self.fn)
         frame_no = 0
         data = {}
@@ -183,7 +193,7 @@ class VideoFitter(object):
             data['frame'] = []
             data['redchi'] = []
         while(cap.isOpened()):
-            if frame_no == max_frames:
+            if frame_no == max_frame:
                 break
             ret, frame = cap.read()
             if ret is False:
@@ -227,17 +237,14 @@ class VideoFitter(object):
             # Set guesses for next fit
             guesses = []
             for param in fit.params.values():
-                if fixed_guess[param.name] is not None:
-                    guesses.append(fixed_guess[param.name])
-                else:
-                    guesses.append(param.value)
+                guesses.append(param.value)
             self.params = guesses
         cap.release()
-        self.fit_dfs[trajectory] = pd.DataFrame(data=data)
+        self.fit_dfs[trajectory_no] = pd.DataFrame(data=data)
 
     def test(self, guesses, frame_no=0, trajectory_no=0):
         '''
-        Use LMTool to find good initial guesses for fit
+        Uses LMTool to find good initial guesses for fit.
         '''
         p_df = self.trajectories[trajectory_no]
         if frame_no > max(p_df.index) or frame_no < min(p_df.index):
@@ -256,8 +263,16 @@ class VideoFitter(object):
         sys.exit(app.exec_())
 
     def animate(self):
-        self.animation = Animate(self.fn, linked_df=self.linked_df)
-        self.animation.run()
+        '''
+        Used after localizing to show tracking animation.
+        '''
+        if self.linked_df is None:
+            raise UserWarning("Error: run localize() before animate().")
+        elif type(self.linked_df) is pd.DataFrame:
+            self.animation = Animate(self.fn, linked_df=self.linked_df)
+            self.animation.run()
+        else:
+            raise ValueError("Error: linked_df is unknown datatype.")
         
     def _process(self, frame):
         frame = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
@@ -271,13 +286,6 @@ class VideoFitter(object):
     def _crop(self, image, xc, yc, w, h, square=True):
         '''
         Returns a cropped image.
-        
-        Args:
-            image: image to be cropped
-            xc: x coordinate of crop's top right corner
-            yc: y coordinate of crop's top right corner
-            w: width of crop
-            h: height of crop
         '''
         cropped_image = image[int(yc - h//2): int(yc + h//2),
                               int(xc - w//2): int(xc + w//2)].astype(float)
@@ -292,6 +300,10 @@ class VideoFitter(object):
         return cropped_image
 
     def _force_crop(self, frame):
+        """
+        Used to analyze only a region of the frame.
+        No need to call this function--just set the self.forced_crop field.
+        """
         xc, yc, w, h = self.forced_crop
         frame = self._crop(frame, xc, yc, w, h, square=False)
         return frame
