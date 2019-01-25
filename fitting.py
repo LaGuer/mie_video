@@ -1,24 +1,24 @@
 '''Class to fit trajectories in a video to Lorenz-Mie theory.'''
 
-from tracker import tracker
-import mie_video.editing as edit
+import mie_video.utilities.editing as edit
+from mie_video.tracking import oat
+from .animation import Animate
+from pylorenzmie.fitting.mie_fit import Mie_Fitter
+from pylorenzmie.lmtool.LMTool import LMTool
+from PyQt5 import QtWidgets
 import numpy as np
 import pandas as pd
-from lorenzmie.theory import spheredhm
-from lorenzmie.fitting.mie_fit import Mie_Fitter
-import cv2
-import os
-from collections import OrderedDict
-import matplotlib.pyplot as plt
-from time import time
 import trackpy as tp
-import lab_io.h5video as h5
-import features.circletransform as ct
+import cv2
+from collections import OrderedDict
+import os
+import sys
+from time import time
 
 
-class Video_Fitter(object):
+class VideoFitter(object):
 
-    def __init__(self, fn, guesses,
+    def __init__(self, fn, guesses=[],
                  background=None,
                  background_fn=None,
                  linked_df=None,
@@ -31,11 +31,8 @@ class Video_Fitter(object):
                      to find a good estimate
         Keywords:
             background_fn: filename of a background video
-            forced_crop: use this to analyze a subregion of the video
-            fixed_params: fixed parameters for Lorenz-Mie fits
             detection_method: 'oat': Oriental alignment transform
                               'tf': Tensorflow (you must use 640x480 frames)
-            minmass: minimum brightness for 'oat' detection
             linked_df: input if linked_df has already been calculated and saved
         """
         self.init_processing(fn, background_fn, background)
@@ -62,14 +59,14 @@ class Video_Fitter(object):
         self.trajectories = None
         if self.detection_method == 'oat':
             self.nfringes = 25
-            self.maxrange = 550.
-            self.tp_params = {'diameter': 51, 'topn': 1}
-            self.crop_thresh = 300
-        if self.linked_df is not None:
-            self.trajectories = self.separate(self.linked_df)
+            self.maxrange = 300.
+            self.tp_params = {'diameter': 31, 'topn': 1}
+            self.crop_thresh = 300.
+        if type(self.linked_df) is pd.DataFrame:
+            self.trajectories = self._separate(self.linked_df)
             self.fit_dfs = [None for _ in range(len(self.trajectories))]
             print(str(len(self.trajectories)) + " trajectories found.")
-
+                
     def init_fitting(self, guesses):
         self._fixed_params = ['n_m', 'mpp', 'lamb']
         self._params = OrderedDict(zip(['x', 'y', 'z', 'a_p',
@@ -115,12 +112,6 @@ class Video_Fitter(object):
         Returns DataFrame of particle parameters in each frame
         of a video linked with their trajectory index
 
-        Args:
-            video: video filename
-        Keywords:
-            background: background image for normalization
-            dark_count: dark count of camera
-            minmass: min brightness for oat detection 
         '''
         if self.linked_df is not None:
             return
@@ -130,37 +121,42 @@ class Video_Fitter(object):
         frame_no = 0
         data = []
         while(cap.isOpened()):
-            if frame_no == max_frames:
+            try:
+                if frame_no == max_frames:
+                    break
+                # Get frame
+                ret, frame = cap.read()
+                if ret is False:
+                    break
+                # Normalize
+                norm = self._process(frame)
+                # Crop if feature of interest is there in all frames
+                if self.forced_crop is not None:
+                    norm = self._force_crop(norm)
+                # Find features in current frame
+                if self.detection_method == 'oat':
+                    features, circ = oat(norm, frame_no,
+                                         locate_params=self.tp_params,
+                                         maxrange=self.maxrange,
+                                         nfringes=self.nfringes)
+                else:
+                    raise(ValueError("method must be either \'oat\' or \'tf\'"))
+                # Add features to total dataset.
+                for feature in features:
+                    feature = np.append(feature, frame_no)
+                    data.append(feature)
+                # Advance frame_no
+                frame_no += 1
+            except KeyboardInterrupt:
+                print("Ending progress...")
                 break
-            # Get frame
-            ret, frame = cap.read()
-            if ret is False:
-                break
-            # Normalize
-            norm = self.normalize(frame)
-            # Crop if feature of interest is there in all frames
-            norm = self.force_crop(norm)
-            # Find features in current frame
-            if self.detection_method == 'tf':
-                tf = tracker.tracker()
-                features = tf.predict(edit.inflate(norm))
-            elif self.detection_method == 'oat':
-                features, circ = self.oat(norm, frame_no)
-            else:
-                raise(ValueError("method must be either \'oat\' or \'tf\'"))
-            # Add features to total dataset.
-            for feature in features:
-                feature = np.append(feature, frame_no)
-                data.append(feature)
-            # Advance frame_no
-            frame_no += 1
         cap.release()
         # Put data set in DataFrame and link
         result_df = pd.DataFrame(columns=['x', 'y', 'w', 'h', 'frame'],
                                  data=data)
         self.linked_df = tp.link(result_df, search_range=20, memory=3,
                                  pos_columns=['y', 'x'])
-        self.trajectories = self.separate(self.linked_df)
+        self.trajectories = self._separate(self.linked_df)
         self.fit_dfs = [None for _ in range(len(self.trajectories))]
         print(str(len(self.trajectories)) + " trajectories found.")
 
@@ -193,9 +189,10 @@ class Video_Fitter(object):
             if ret is False:
                 break
             # Normalize image
-            norm = self.normalize(frame)
+            norm = self._process(frame)
             # Crop if feature of interest is there in all frames
-            norm = self.force_crop(norm)
+            if self.forced_crop is not None:
+                norm = self._force_crop(norm)
             # Crop feature of interest.
             feats = p_df.loc[p_df['frame'] == frame_no]
             if len(feats) == 0:
@@ -203,7 +200,7 @@ class Video_Fitter(object):
                 frame_no += 1
                 continue
             x, y, w, h, frame, particle = feats.iloc[0]
-            feature = edit.crop(norm, x, y, w, h)
+            feature = self._crop(norm, x, y, w, h)
             # Fit frame
             start = time()
             fit = self.fitter.fit(feature)
@@ -238,22 +235,68 @@ class Video_Fitter(object):
         cap.release()
         self.fit_dfs[trajectory] = pd.DataFrame(data=data)
 
-    def normalize(self, frame):
+    def test(self, guesses, frame_no=0, trajectory_no=0):
+        '''
+        Use LMTool to find good initial guesses for fit
+        '''
+        p_df = self.trajectories[trajectory_no]
+        if frame_no > max(p_df.index) or frame_no < min(p_df.index):
+            raise(IndexError("Trajectory not found in frame {} for particle {}"
+                             .format(frame_no, trajectory_no)))
+        cap = cv2.VideoCapture(self.fn)
+        cap.set(1, frame_no)
+        ret, frame = cap.read()
+        if not ret:
+            print("Frame not read.")
+            return
+        app = QtWidgets.QApplication(sys.argv)
+        lmtool = LMTool(data=self._process(frame),
+                        normalization=self.background)
+        lmtool.show()
+        sys.exit(app.exec_())
+
+    def animate(self):
+        self.animation = Animate(self.fn, linked_df=self.linked_df)
+        self.animation.run()
+        
+    def _process(self, frame):
         frame = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
         frame = frame.astype(np.float)
         if self.background is not None:
             norm = (frame - self.dark_count) / (self.background - self.dark_count)
         else:
-            norm = frame
+            norm /= np.mean(frame)
         return norm
 
-    def force_crop(self, frame):
-        if self.forced_crop is not None:
-            xc, yc, w, h = self.forced_crop
-            frame = edit.crop(frame, xc, yc, w, h, square=False)
+    def _crop(self, image, xc, yc, w, h, square=True):
+        '''
+        Returns a cropped image.
+        
+        Args:
+            image: image to be cropped
+            xc: x coordinate of crop's top right corner
+            yc: y coordinate of crop's top right corner
+            w: width of crop
+            h: height of crop
+        '''
+        cropped_image = image[int(yc - h//2): int(yc + h//2),
+                              int(xc - w//2): int(xc + w//2)].astype(float)
+        xdim, ydim = cropped_image.shape
+        if square is True:
+            if xdim == ydim:
+                return cropped_image
+            if xdim > ydim:
+                cropped_image = cropped_image[1:-1, :]
+            else:
+                cropped_image = cropped_image[:, 1:-1]
+        return cropped_image
+
+    def _force_crop(self, frame):
+        xc, yc, w, h = self.forced_crop
+        frame = self._crop(frame, xc, yc, w, h, square=False)
         return frame
 
-    def separate(self, trajectories):
+    def _separate(self, trajectories):
         '''
         Returns list of separated DataFrames for each particle
         
@@ -264,92 +307,3 @@ class Video_Fitter(object):
         for idx in range(int(trajectories.particle.max()) + 1):
             result.append(trajectories[trajectories.particle == idx])
         return result
-
-    def oat(self, norm, frame_no):
-        '''Use the orientational alignment transform
-        on every pixel of an image and return features.'''
-        t = time()
-        circ = ct.circletransform(norm, theory='orientTrans')
-        circ = circ / np.amax(circ)
-        circ = h5.TagArray(circ, frame_no)
-        feats = tp.locate(circ,
-                          engine='numba',
-                          **self.tp_params)
-        feats['w'] = 400
-        feats['h'] = 400
-        features = np.array(feats[['x', 'y', 'w', 'h']])
-        s = None
-        for idx, feature in enumerate(features):
-            s = self.feature_extent(norm, (feature[0], feature[1]))
-            if self.crop_thresh is not None:
-                if s > self.crop_thresh:
-                    s = self.crop_thresh
-            features[idx][2] = s
-            features[idx][3] = s
-        print("Time to find {} features at frame {}: {}".format(features.shape[0],
-                                                                frame_no,
-                                                                time() - t))
-        print("Mass of particles: {}".format(list(feats['mass'])))
-        print("Side length: {}".format(s))
-        return features, circ
-
-    def feature_extent(self, norm, center):
-        ravg, rstd = self.aziavg(norm, center)
-        b = ravg - 1.
-        ndx = np.where(np.diff(np.sign(b)))[0] + 1.
-        if len(ndx) <= self.nfringes:
-            return self.maxrange
-        else:
-            return float(ndx[self.nfringes])
-
-    def aziavg(self, data, center):
-        x_p, y_p = center
-        y, x = np.indices((data.shape))
-        d = data.ravel()
-        r = np.hypot(x - x_p, y - y_p).astype(np.int).ravel()
-        nr = np.bincount(r)
-        ravg = np.bincount(r, d) / nr
-        avg = ravg[r]
-        rstd = np.sqrt(np.bincount(r, (d - avg)**2) / nr)
-        return ravg, rstd
-
-    def test(self, guesses, trajectory=0, frame_no=0):
-        '''
-        Plot guessed image vs. image of a trajectory at a given frame
-        
-        Args:
-            guesses: list of parameters ordered
-                     [x, y, z, a_p, n_p, n_m, mpp, lamb]
-        Keywords:
-            trajectory: index of trajectory in self.trajectory
-            frame_no: index of frame to test
-        Returns:
-            Raw frame from camera
-        '''
-        p_df = self.trajectories[trajectory]
-        if frame_no > max(p_df.index) or frame_no < min(p_df.index):
-            raise(IndexError("Trajectory not found in frame {} for particle {}"
-                             .format(frame_no, trajectory)))
-        cap = cv2.VideoCapture(self.fn)
-        cap.set(1, frame_no)
-        ret, frame = cap.read()
-        if not ret:
-            print("Frame not read.")
-            return
-        # Normalize and force crop
-        norm = self.normalize(frame)
-        norm = self.force_crop(norm)
-        # Crop feature
-        x, y, w, h, frame_no, particle = p_df.iloc[0, :]
-        feature = edit.crop(norm, x, y, w, h)
-        # Generate guess
-        x, y, z, a_p, n_p, n_m, mpp, lamb = guesses
-        theory = spheredhm.spheredhm([0, 0, z],
-                                     a_p, n_p, n_m,
-                                     dim=feature.shape,
-                                     lamb=lamb, mpp=mpp)
-        # Plot and return normalized image
-        plt.imshow(np.hstack([feature, theory]), cmap='gray')
-        plt.show()
-        cap.release()
-        return norm
