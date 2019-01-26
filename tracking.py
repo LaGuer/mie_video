@@ -31,7 +31,7 @@ def oat(norm, frame_no=None,
         s = feature_extent(norm, (feature[0], feature[1]),
                            nfringes=nfringes,
                            maxrange=maxrange)
-        if s > crop_threshold:
+        if crop_threshold is not None and s > crop_threshold:
             s = crop_threshold
         features[idx][2] = s
         features[idx][3] = s
