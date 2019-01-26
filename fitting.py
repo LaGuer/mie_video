@@ -38,7 +38,7 @@ class VideoFitter(object):
         self.init_fitting(guesses)
         self.init_localization(linked_df, detection_method)
 
-    def init_processing(self, fn, background_fn, background):
+    def init_processing(self, fn, background):
         """
         Initialize parameters for files, cropping, and background.
         Change these parameters before localizing for best/preferred results.
