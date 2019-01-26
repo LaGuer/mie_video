@@ -5,7 +5,10 @@ from mie_video.tracking import oat
 from .animation import Animate
 from pylorenzmie.fitting.mie_fit import Mie_Fitter
 from pylorenzmie.lmtool.LMTool import LMTool
+from pylorenzmie.theory.LMHologram import LMHologram
+from pylorenzmie.theory.Instrument import coordinates
 from PyQt5 import QtWidgets
+import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 import trackpy as tp
@@ -50,10 +53,10 @@ class VideoFitter(object):
         if type(background) is str and background[:-4] == '.avi':
             self.background = edit.background(background,
                                               shape=self.frame_size)
-        elif type(background) is np.ndarray:
+        elif type(background) is np.ndarray or background is None:
             self.background = background
         else:
-            raise(ValueError("background must be .avi filename or np.ndarray"))
+            raise(ValueError("background must be .avi filename, np.ndarray, or None."))
 
     def init_localization(self, linked_df, detection_method):
         """
@@ -241,7 +244,7 @@ class VideoFitter(object):
         cap.release()
         self.fit_dfs[trajectory_no] = pd.DataFrame(data=data)
 
-    def test(self, guesses, frame_no=0, trajectory_no=0):
+    def tool(self, frame_no=0, trajectory_no=0):
         '''
         Uses LMTool to find good initial guesses for fit.
         '''
@@ -261,6 +264,52 @@ class VideoFitter(object):
         lmtool.show()
         sys.exit(app.exec_())
 
+    def compare(self, guesses, trajectory_no=0, frame_no=0):
+        '''
+        Plot guessed image vs. image of a trajectory at a given frame
+        
+        Args:
+            guesses: list of parameters ordered
+                     [x, y, z, a_p, n_p, n_m, mpp, lamb]
+        Keywords:
+            trajectory: index of trajectory in self.trajectory
+            frame_no: index of frame to test
+        Returns:
+            Raw frame from camera
+        '''
+        p_df = self.trajectories[trajectory_no]
+        if frame_no > max(p_df.index) or frame_no < min(p_df.index):
+            raise(IndexError("Trajectory not found in frame {} for particle {}"
+                             .format(frame_no, trajectory_no)))
+        cap = cv2.VideoCapture(self.fn)
+        cap.set(1, frame_no)
+        ret, frame = cap.read()
+        if not ret:
+            print("Frame not read.")
+            return
+        # Normalize and force crop
+        norm = self._process(frame)
+        if self.forced_crop is not None:
+            norm = self._force_crop()
+        # Crop feature
+        x, y, w, h, frame_no, particle = p_df.iloc[0, :]
+        feature = self._crop(norm, x, y, w, h)
+        # Generate guess
+        x, y, z, a_p, n_p, n_m, mpp, lamb = guesses
+        h = LMHologram(coordinates=coordinates(feature.shape))
+        h.particle.r_p = [x + feature.shape[0] // 2, y + feature.shape[1] // 2, z]
+        h.particle.a_p = a_p
+        h.particle.n_p = n_p
+        h.instrument.n_m = n_m
+        h.instrument.magnification = mpp
+        h.instrument.wavelength = lamb
+        hol = h.hologram().reshape(feature.shape)
+        # Plot and return normalized image
+        plt.imshow(np.hstack([feature, hol]), cmap='gray')
+        plt.show()
+        cap.release()
+        return norm
+
     def animate(self):
         '''
         Used after localizing to show tracking animation.
@@ -279,7 +328,7 @@ class VideoFitter(object):
         if self.background is not None:
             norm = (frame - self.dark_count) / (self.background - self.dark_count)
         else:
-            norm /= np.mean(frame)
+            norm = frame / np.mean(frame)
         return norm
 
     def _crop(self, image, xc, yc, w, h, square=True):
