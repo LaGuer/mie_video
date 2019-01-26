@@ -24,7 +24,8 @@ class VideoFitter(object):
     def __init__(self, fn, guesses=[],
                  background=None,
                  linked_df=None,
-                 detection_method='oat'):
+                 detection_method='oat',
+                 save=True):
         """
         Args:
             fn: filename
@@ -37,6 +38,7 @@ class VideoFitter(object):
                               'tf': Tensorflow (you must use 640x480 frames)
             linked_df: input if linked_df has already been calculated and saved
         """
+        self.save = save
         self.init_processing(fn, background)
         self.init_fitting(guesses)
         self.init_localization(linked_df, detection_method)
@@ -125,7 +127,7 @@ class VideoFitter(object):
         self._fixed_params = params
         self.fitter = Mie_Fitter(self.params, fixed=self._fixed_params)
 
-    def localize(self, max_frame=None):
+    def localize(self, max_frame=None, minframe=None):
         '''
         Returns DataFrame of particle parameters in each frame
         of a video linked with their trajectory index
@@ -133,11 +135,16 @@ class VideoFitter(object):
         '''
         if self.linked_df is not None:
             return
+        dest_fn = "linked_df_" + self.fn.split("/")[-1][:-4] + ".csv"
         # Create VideoCapture to read video
         cap = cv2.VideoCapture(self.fn)
         # Initialize components to build overall dataset.
         frame_no = 0
-        data = []
+        if minframe is not None:
+            cap.set(1, minframe)
+            frame_no = minframe
+        cols = ['x', 'y', 'w', 'h', 'frame']
+        self.unlinked_df = pd.DataFrame(columns=cols)
         while(cap.isOpened()):
             try:
                 if frame_no == max_frame:
@@ -162,7 +169,12 @@ class VideoFitter(object):
                 # Add features to total dataset.
                 for feature in features:
                     feature = np.append(feature, frame_no)
-                    data.append(feature)
+                    i = len(self.unlinked_df) + 1
+                    self.unlinked_df = self.unlinked_df.append(pd.DataFrame(columns=cols,
+                                                                            data=[feature],
+                                                                            index=[i]))
+                if self.save:
+                    self.unlinked_df.to_csv(dest_fn)
                 # Advance frame_no
                 frame_no += 1
             except KeyboardInterrupt:
@@ -170,10 +182,10 @@ class VideoFitter(object):
                 break
         cap.release()
         # Put data set in DataFrame and link
-        result_df = pd.DataFrame(columns=['x', 'y', 'w', 'h', 'frame'],
-                                 data=data)
-        self.linked_df = tp.link(result_df, search_range=20, memory=3,
+        self.linked_df = tp.link(self.unlinked_df, search_range=20, memory=3,
                                  pos_columns=['y', 'x'])
+        if self.save:
+            self.linked_df.to_csv(dest_fn)
         self.trajectories = self._separate(self.linked_df)
         self.fit_dfs = [None for _ in range(len(self.trajectories))]
         print(str(len(self.trajectories)) + " trajectories found.")
@@ -187,69 +199,85 @@ class VideoFitter(object):
         Args:
             trajectory_no: index of particle trajectory in self.trajectories.
         '''
-        p_df = self.trajectories[trajectory_no]
+        idx = trajectory_no
+        dest_fn = "fit_df_" + str(idx) + "_" + self.fn.split("/")[-1][:-4] + ".csv"
+        p_df = self.trajectories[idx]
         cap = cv2.VideoCapture(self.fn)
         frame_no = 0
-        data = {}
-        for key in self.params:
-            data[key] = []
-            data['frame'] = []
-            data['redchi'] = []
+        #data = {}
+        #for key in self.params:
+        #    data[key] = []
+        #    data['frame'] = []
+        #    data['redchi'] = []
         if minframe is not None:
             cap.set(1, minframe)
             frame_no = minframe
+        cols = np.append(list(self.params.keys()), ['frame', 'redchi'])
+        self.fit_dfs[idx] = pd.DataFrame(columns=cols)
         while(cap.isOpened()):
-            if frame_no == max_frame:
-                break
-            ret, frame = cap.read()
-            if ret is False:
-                break
-            # Normalize image
-            norm = self._process(frame)
-            # Crop if feature of interest is there in all frames
-            if self.forced_crop is not None:
-                norm = self._force_crop(norm)
-            # Crop feature of interest.
-            feats = p_df.loc[p_df['frame'] == frame_no]
-            if len(feats) == 0:
-                print('No particle found in frame ' + str(frame_no))
+            try:
+                if frame_no == max_frame:
+                    break
+                ret, frame = cap.read()
+                if ret is False:
+                    break
+                # Normalize image
+                norm = self._process(frame)
+                # Crop if feature of interest is there in all frames
+                if self.forced_crop is not None:
+                    norm = self._force_crop(norm)
+                # Crop feature of interest.
+                feats = p_df.loc[p_df['frame'] == frame_no]
+                if len(feats) == 0:
+                    print('No particle found in frame ' + str(frame_no))
+                    frame_no += 1
+                    continue
+                x, y, w, h, frame, particle = feats.iloc[0]
+                feature = self._crop(norm, x, y, w, h)
+                # Fit frame
+                start = time()
+                fit = self.fitter.fit(feature)
+                fit_time = time() - start
+                print(self.fn[-7:-4] + " time to fit frame " + str(frame_no) +
+                      ": " + str(fit_time))
+                print("Fit RedChiSq: " + str(fit.redchi))
+                print("Fit z: " + str(fit.params['z'].value))
+                print("Fit a_p, n_p: {}, {}".format(fit.params['a_p'].value,
+                                                    fit.params['n_p'].value))
+                # Add fit to dataset
+                row = [fit.params['x'].value + x, fit.params['y'].value + y,
+                       fit.params]
+                row = []
+                for col in cols:
+                    if col == 'x':
+                        row.append(fit.params[col].value + x)
+                    elif col == 'y':
+                        row.append(fit.params[col].value + y)
+                    elif col == 'frame':
+                        row.append(frame_no)
+                    elif col == 'redchi':
+                        row.append(fit.redchi)
+                    else:
+                        row.append(fit.params[col].value)
+                i = len(self.fit_dfs[idx]) + 1
+                self.fit_dfs[idx] = self.fit_dfs[idx].append(pd.DataFrame(columns=cols,
+                                                                          data=[row],
+                                                                          index=[i]))
+                if self.save:
+                    self.fit_dfs[idx].to_csv(dest_fn)
                 frame_no += 1
-                continue
-            x, y, w, h, frame, particle = feats.iloc[0]
-            feature = self._crop(norm, x, y, w, h)
-            # Fit frame
-            start = time()
-            fit = self.fitter.fit(feature)
-            fit_time = time() - start
-            print(self.fn[-7:-4] + " time to fit frame " + str(frame_no) +
-                  ": " + str(fit_time))
-            print("Fit RedChiSq: " + str(fit.redchi))
-            print("Fit z: " + str(fit.params['z'].value))
-            print("Fit a_p, n_p: {}, {}".format(fit.params['a_p'].value,
-                                                fit.params['n_p'].value))
-            # Add fit to dataset
-            for key in data.keys():
-                if key == 'x':
-                    data[key].append(fit.params[key].value + x)
-                elif key == 'y':
-                    data[key].append(fit.params[key].value + y)
-                elif key == 'frame':
-                    data[key].append(frame_no)
-                elif key == 'redchi':
-                    data[key].append(fit.redchi)
-                else:
-                    data[key].append(fit.params[key].value)
-            frame_no += 1
-            # Set guesses for next fit
-            guesses = []
-            for param in fit.params.values():
-                if param.name in fixed_guess.keys():
-                    guesses.append(fixed_guess[param.name])
-                else:
-                    guesses.append(param.value)
-            self.params = guesses
+                # Set guesses for next fit
+                guesses = []
+                for param in fit.params.values():
+                    if param.name in fixed_guess.keys():
+                        guesses.append(fixed_guess[param.name])
+                    else:
+                        guesses.append(param.value)
+                self.params = guesses
+            except KeyboardInterrupt:
+                print("Ending progress...")
+                break
         cap.release()
-        self.fit_dfs[trajectory_no] = pd.DataFrame(data=data)
 
     def tool(self, frame_no=0, trajectory_no=0):
         '''
