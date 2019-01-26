@@ -86,7 +86,7 @@ class VideoFitter(object):
         self._fixed_params = ['n_m', 'mpp', 'lamb']
         self._params = OrderedDict(zip(['x', 'y', 'z', 'a_p',
                                         'n_p', 'n_m', 'mpp', 'lamb'], guesses))
-        self.fitter = Mie_Fitter(self.params, fixed=self.fixed_params)
+        self.fitter = Mie_Fitter(self.params, fixed=self._fixed_params)
 
     @property
     def params(self):
@@ -178,7 +178,8 @@ class VideoFitter(object):
         self.fit_dfs = [None for _ in range(len(self.trajectories))]
         print(str(len(self.trajectories)) + " trajectories found.")
 
-    def fit(self, trajectory_no, max_frame=None):
+    def fit(self, trajectory_no, max_frame=None, minframe=None,
+            fixed_guess={}):
         '''
         None DataFrame of fitted parameters in each frame
         for a given trajectory.
@@ -194,6 +195,9 @@ class VideoFitter(object):
             data[key] = []
             data['frame'] = []
             data['redchi'] = []
+        if minframe is not None:
+            cap.set(1, minframe)
+            frame_no = minframe
         while(cap.isOpened()):
             if frame_no == max_frame:
                 break
@@ -239,7 +243,10 @@ class VideoFitter(object):
             # Set guesses for next fit
             guesses = []
             for param in fit.params.values():
-                guesses.append(param.value)
+                if param.name in fixed_guess.keys():
+                    guesses.append(fixed_guess[param.name])
+                else:
+                    guesses.append(param.value)
             self.params = guesses
         cap.release()
         self.fit_dfs[trajectory_no] = pd.DataFrame(data=data)
@@ -292,7 +299,8 @@ class VideoFitter(object):
         if self.forced_crop is not None:
             norm = self._force_crop()
         # Crop feature
-        x, y, w, h, frame_no, particle = p_df.iloc[0, :]
+        feats = p_df.loc[p_df['frame'] == frame_no]
+        x, y, w, h, frame, particle = feats.iloc[0]
         feature = self._crop(norm, x, y, w, h)
         # Generate guess
         x, y, z, a_p, n_p, n_m, mpp, lamb = guesses

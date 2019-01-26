@@ -12,7 +12,7 @@ def oat(norm, frame_no=None,
         locate_params={'diameter': 31,
                        'minmass': 30.},
         nfringes=25,
-        maxrange=300.,
+        maxrange=400.,
         crop_threshold=None):
     '''
     Use the orientational alignment transform
@@ -44,7 +44,7 @@ def oat(norm, frame_no=None,
     return features, circ
 
 
-def feature_extent(norm, center, nfringes=20, maxrange=550.):
+def feature_extent(norm, center, nfringes=20, maxrange=400.):
     ravg, rstd = aziavg(norm, center)
     b = ravg - 1.
     ndx = np.where(np.diff(np.sign(b)))[0] + 1.
