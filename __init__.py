@@ -3,4 +3,4 @@ __all__ = ['fitting', 'utilities', 'tracking',
            'circletransform']
 
 from . import fitting, utilities, tracking, animation
-from utilities import editing, circletransform, h5video
+from .utilities import editing, circletransform, h5video

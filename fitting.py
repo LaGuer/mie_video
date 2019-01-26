@@ -20,7 +20,6 @@ class VideoFitter(object):
 
     def __init__(self, fn, guesses=[],
                  background=None,
-                 background_fn=None,
                  linked_df=None,
                  detection_method='oat'):
         """
@@ -30,12 +29,12 @@ class VideoFitter(object):
                      first frame of video. Use Video_Fitter.test
                      to find a good estimate
         Keywords:
-            background_fn: filename of a background video
+            background: background image or filename of a background video
             detection_method: 'oat': Oriental alignment transform
                               'tf': Tensorflow (you must use 640x480 frames)
             linked_df: input if linked_df has already been calculated and saved
         """
-        self.init_processing(fn, background_fn, background)
+        self.init_processing(fn, background)
         self.init_fitting(guesses)
         self.init_localization(linked_df, detection_method)
 
@@ -48,21 +47,21 @@ class VideoFitter(object):
         self.dark_count = 13
         self.frame_size = (1024, 1280)
         self.forced_crop = None
-        if background_fn is not None:
-            if background is not None:
-                raise ValueError("No passing both background video filename and background image")
-            self.background = edit.background(background_fn,
+        if type(background) is str and background[:-4] == '.avi':
+            self.background = edit.background(background,
                                               shape=self.frame_size)
-        else:
+        elif type(background) is np.ndarray:
             self.background = background
+        else:
+            raise(ValueError("background must be .avi filename or np.ndarray"))
 
     def init_localization(self, linked_df, detection_method):
         """
         Initialize parameters for detection.
 
-        If using the orientational alignment transform, 
+        If using the orientational alignment transform,
         adjust parameters nfringes, maxrange, tp_params, and
-        crop_thresh as needed.
+        crop_threshold as needed.
         """
         self.detection_method = detection_method
         self.linked_df = linked_df
@@ -71,7 +70,7 @@ class VideoFitter(object):
             self.nfringes = 25
             self.maxrange = 300.
             self.tp_params = {'diameter': 31, 'topn': 1}
-            self.crop_thresh = 300.
+            self.crop_threshold = 300.
         if type(self.linked_df) is pd.DataFrame:
             self.trajectories = self._separate(self.linked_df)
             self.fit_dfs = [None for _ in range(len(self.trajectories))]

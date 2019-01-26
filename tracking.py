@@ -12,8 +12,8 @@ def oat(norm, frame_no=None,
         locate_params={'diameter': 31,
                        'minmass': 30.},
         nfringes=25,
-        maxrange=300.
-):
+        maxrange=300.,
+        crop_threshold=None):
     '''
     Use the orientational alignment transform
     on every pixel of an image and return features.'''
@@ -31,6 +31,8 @@ def oat(norm, frame_no=None,
         s = feature_extent(norm, (feature[0], feature[1]),
                            nfringes=nfringes,
                            maxrange=maxrange)
+        if s > crop_threshold:
+            s = crop_threshold
         features[idx][2] = s
         features[idx][3] = s
     msg = "Time to find {} features".format(features.shape[0])
