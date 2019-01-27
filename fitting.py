@@ -21,7 +21,10 @@ from time import time
 
 class VideoFitter(object):
 
-    def __init__(self, fn, guesses=[],
+    def __init__(self, fn,
+                 guesses=OrderedDict(zip(['x', 'y', 'z', 'a_p', 'n_p',
+                                          'n_m', 'mpp', 'lamb'],
+                                         (None for n in range(8)))),
                  background=None,
                  linked_df=None,
                  detection_method='oat',
@@ -77,6 +80,9 @@ class VideoFitter(object):
             self.tp_params = {'diameter': 31, 'topn': 1}
             self.crop_threshold = 300.
         if type(self.linked_df) is pd.DataFrame:
+            if 'particle' not in self.linked_df.columns:
+                tp.link(self.linked_df, search_range=20, memory=3,
+                        pos_columns=['y', 'x'])
             self.trajectories = self._separate(self.linked_df)
             self.fit_dfs = [None for _ in range(len(self.trajectories))]
             print(str(len(self.trajectories)) + " trajectories found.")
@@ -106,13 +112,17 @@ class VideoFitter(object):
             guesses: list of parameters ordered
                      [x, y, z, a_p, n_p, n_m, mpp, lamb]
         '''
-        new_params = OrderedDict(zip(['x', 'y', 'z', 'a_p', 'n_p',
-                                      'n_m', 'mpp', 'lamb'], guesses))
+        if len(guesses) != 8:
+            raise ValueError("guesses must be length 8")
+        if type(guesses) is list:
+            new_params = OrderedDict(zip(['x', 'y', 'z', 'a_p', 'n_p',
+                                          'n_m', 'mpp', 'lamb'], guesses))
+        elif type(guesses) is OrderedDict:
+            new_params = guesses
+        else:
+            raise ValueError("Type of guesses must be list or OrderedDict")
         for key in self.params.keys():
-            if key == 'x' or key == 'y':
-                self.fitter.set_param(key, 0.0)
-            else:
-                self.fitter.set_param(key, new_params[key])
+            self.fitter.set_param(key, new_params[key])
             self._params = self.fitter.p.valuesdict()
 
     @property
@@ -125,31 +135,29 @@ class VideoFitter(object):
         Set fixed parameters for fitting
         """
         self._fixed_params = params
-        self.fitter = Mie_Fitter(self.params, fixed=self._fixed_params)
+        self.fitter = Mie_Fitter(self.params, fixed=params)
 
     def localize(self, max_frame=None, minframe=None):
         '''
         Returns DataFrame of particle parameters in each frame
         of a video linked with their trajectory index
-
         '''
-        if self.linked_df is not None:
+        if type(self.linked_df) is pd.DataFrame:
             return
-        dest_fn = "linked_df_" + self.fn.split("/")[-1][:-4] + ".csv"
-        # Create VideoCapture to read video
+        split = self.fn.split("/")
+        dest_fn = split[:-1] + "linked_df_" + split[-1][:-4] + ".csv"
         cap = cv2.VideoCapture(self.fn)
-        # Initialize components to build overall dataset.
         frame_no = 0
         if minframe is not None:
             cap.set(1, minframe)
             frame_no = minframe
         cols = ['x', 'y', 'w', 'h', 'frame']
-        self.unlinked_df = pd.DataFrame(columns=cols)
+        self.unlinked_df = pd.DataFrame(columns=cols,
+                                        data=[(None for col in cols)])
         while(cap.isOpened()):
             try:
                 if frame_no == max_frame:
                     break
-                # Get frame
                 ret, frame = cap.read()
                 if ret is False:
                     break
@@ -200,20 +208,17 @@ class VideoFitter(object):
             trajectory_no: index of particle trajectory in self.trajectories.
         '''
         idx = trajectory_no
-        dest_fn = "fit_df_" + str(idx) + "_" + self.fn.split("/")[-1][:-4] + ".csv"
+        split = self.fn.split("/")
+        dest = split[:-1] + "fit_df" + str(idx) + "_" + split[-1][:-4] + ".csv"
         p_df = self.trajectories[idx]
         cap = cv2.VideoCapture(self.fn)
         frame_no = 0
-        #data = {}
-        #for key in self.params:
-        #    data[key] = []
-        #    data['frame'] = []
-        #    data['redchi'] = []
         if minframe is not None:
             cap.set(1, minframe)
             frame_no = minframe
         cols = np.append(list(self.params.keys()), ['frame', 'redchi'])
-        self.fit_dfs[idx] = pd.DataFrame(columns=cols)
+        self.fit_dfs[idx] = pd.DataFrame(columns=cols,
+                                         data=[(None for col in cols)])
         while(cap.isOpened()):
             try:
                 if frame_no == max_frame:
@@ -322,9 +327,8 @@ class VideoFitter(object):
         if not ret:
             print("Frame not read.")
             return
-        # Normalize and force crop
         norm = self._process(frame)
-        if self.forced_crop is not None:
+        if type(self.forced_crop) is in (list, tuple) and len(self.forced_crop) == 4:
             norm = self._force_crop()
         # Crop feature
         feats = p_df.loc[p_df['frame'] == frame_no]
@@ -341,7 +345,7 @@ class VideoFitter(object):
         h.instrument.wavelength = lamb
         hol = h.hologram().reshape(feature.shape)
         # Plot and return normalized image
-        plt.imshow(np.hstack([feature, hol]), cmap='gray')
+        plt.imshow(np.hstack([feature, hol, feature - hol]), cmap='gray')
         plt.show()
         cap.release()
         return norm
@@ -357,6 +361,11 @@ class VideoFitter(object):
             self.animation.run()
         else:
             raise ValueError("Error: linked_df is unknown datatype.")
+
+#    def write(self, row, df):
+#        idx = np.amax(df.index)
+#        df.loc[idx]
+#        if self.save:            
         
     def _process(self, frame):
         frame = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
