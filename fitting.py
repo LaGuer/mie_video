@@ -17,6 +17,10 @@ from collections import OrderedDict
 import os
 import sys
 from time import time
+import logging
+logger = logging.getLogger()
+logger.setLevel(logging.WARNING)
+logger.setLevel(logging.INFO)
 
 
 class VideoFitter(object):
@@ -85,16 +89,15 @@ class VideoFitter(object):
                         pos_columns=['y', 'x'])
             self.trajectories = self._separate(self.linked_df)
             self.fit_dfs = [None for _ in range(len(self.trajectories))]
-            print(str(len(self.trajectories)) + " trajectories found.")
-                
+            logging.info(str(len(self.trajectories)) + " trajectories found.")
+
     def init_fitting(self, guesses):
         """
         Initialize parameters for fitting.
         """
         self._fixed_params = ['n_m', 'mpp', 'lamb']
-        self._params = OrderedDict(zip(['x', 'y', 'z', 'a_p',
-                                        'n_p', 'n_m', 'mpp', 'lamb'], guesses))
-        self.fitter = Mie_Fitter(self.params, fixed=self._fixed_params)
+        self.params = guesses
+        self.fitter = Mie_Fitter(self.params, fixed=self.fixed_params)
 
     @property
     def params(self):
@@ -186,7 +189,7 @@ class VideoFitter(object):
                 # Advance frame_no
                 frame_no += 1
             except KeyboardInterrupt:
-                print("Ending progress...")
+                logging.warning("Ending progress...")
                 break
         cap.release()
         # Put data set in DataFrame and link
@@ -196,7 +199,7 @@ class VideoFitter(object):
             self.linked_df.to_csv(dest_fn)
         self.trajectories = self._separate(self.linked_df)
         self.fit_dfs = [None for _ in range(len(self.trajectories))]
-        print(str(len(self.trajectories)) + " trajectories found.")
+        logging.info(str(len(self.trajectories)) + " trajectories found.")
 
     def fit(self, trajectory_no, max_frame=None, minframe=None,
             fixed_guess={}):
@@ -234,7 +237,7 @@ class VideoFitter(object):
                 # Crop feature of interest.
                 feats = p_df.loc[p_df['frame'] == frame_no]
                 if len(feats) == 0:
-                    print('No particle found in frame ' + str(frame_no))
+                    logging.warning('No particle found in frame ' + str(frame_no))
                     frame_no += 1
                     continue
                 x, y, w, h, frame, particle = feats.iloc[0]
@@ -243,12 +246,14 @@ class VideoFitter(object):
                 start = time()
                 fit = self.fitter.fit(feature)
                 fit_time = time() - start
-                print(self.fn[-7:-4] + " time to fit frame " + str(frame_no) +
-                      ": " + str(fit_time))
-                print("Fit RedChiSq: " + str(fit.redchi))
-                print("Fit z: " + str(fit.params['z'].value))
-                print("Fit a_p, n_p: {}, {}".format(fit.params['a_p'].value,
-                                                    fit.params['n_p'].value))
+                logging.info(self.fn[-7:-4]
+                             + " time to fit frame " + str(frame_no) +
+                             ": " + str(fit_time))
+                logging.info("Fit RedChiSq: " + str(fit.redchi))
+                logging.info("Fit z: " + str(fit.params['z'].value))
+                logging.info("Fit a_p, n_p: {}, {}".
+                             format(fit.params['a_p'].value,
+                                    fit.params['n_p'].value))
                 # Add fit to dataset
                 row = [fit.params['x'].value + x, fit.params['y'].value + y,
                        fit.params]
@@ -280,7 +285,7 @@ class VideoFitter(object):
                         guesses.append(param.value)
                 self.params = guesses
             except KeyboardInterrupt:
-                print("Ending progress...")
+                logging.warning("Ending progress...")
                 break
         cap.release()
 
@@ -296,7 +301,7 @@ class VideoFitter(object):
         cap.set(1, frame_no)
         ret, frame = cap.read()
         if not ret:
-            print("Frame not read.")
+            logging.warning("Frame not read.")
             return
         app = QtWidgets.QApplication(sys.argv)
         lmtool = LMTool(data=self._process(frame),
@@ -325,7 +330,7 @@ class VideoFitter(object):
         cap.set(1, frame_no)
         ret, frame = cap.read()
         if not ret:
-            print("Frame not read.")
+            logging.warning("Frame not read.")
             return
         norm = self._process(frame)
         if type(self.forced_crop) is in (list, tuple) and len(self.forced_crop) == 4:
