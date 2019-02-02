@@ -32,7 +32,7 @@ class VideoFitter(object):
                  background=None,
                  linked_df=None,
                  detection_method='oat',
-                 save=True):
+                 save=False):
         """
         Args:
             fn: filename
@@ -84,9 +84,8 @@ class VideoFitter(object):
             self.tp_params = {'diameter': 31, 'topn': 1}
             self.crop_threshold = 300.
         if type(self.linked_df) is pd.DataFrame:
-            if 'particle' not in self.linked_df.columns:
-                tp.link(self.linked_df, search_range=20, memory=3,
-                        pos_columns=['y', 'x'])
+            self.linked_df = self.linked_df[['x', 'y', 'w', 'h',
+                                             'frame', 'particle']]
             self.trajectories = self._separate(self.linked_df)
             self.fit_dfs = [None for _ in range(len(self.trajectories))]
             logging.info(str(len(self.trajectories)) + " trajectories found.")
@@ -96,7 +95,9 @@ class VideoFitter(object):
         Initialize parameters for fitting.
         """
         self._fixed_params = ['n_m', 'mpp', 'lamb']
-        self.params = guesses
+        self._keys = ['x', 'y', 'z', 'a_p', 'n_p',
+                      'n_m', 'mpp', 'lamb']
+        self._params = guesses
         self.fitter = Mie_Fitter(self.params, fixed=self.fixed_params)
 
     @property
@@ -126,7 +127,7 @@ class VideoFitter(object):
             raise ValueError("Type of guesses must be list or OrderedDict")
         for key in self.params.keys():
             self.fitter.set_param(key, new_params[key])
-            self._params = self.fitter.p.valuesdict()
+        self._params = self.fitter.p.valuesdict()
 
     @property
     def fixed_params(self):
@@ -148,7 +149,7 @@ class VideoFitter(object):
         if type(self.linked_df) is pd.DataFrame:
             return
         split = self.fn.split("/")
-        dest = split[:-1] + "linked_df_" + split[-1][:-4] + ".csv"
+        dest = "linked_df_" + split[-1][:-4] + ".csv"
         cap = cv2.VideoCapture(self.fn)
         if type(minframe) == int:
             cap.set(1, minframe)
@@ -158,32 +159,28 @@ class VideoFitter(object):
         cols = ['x', 'y', 'w', 'h', 'frame']
         self.unlinked_df = pd.DataFrame(columns=cols)
         while(cap.isOpened()):
-            try:
-                if frame_no == max_frame:
-                    break
-                ret, frame = cap.read()
-                if ret is False:
-                    break
-                norm = self._process(frame)
-                if self.detection_method == 'oat':
-                    features, circ = oat(norm, frame_no,
-                                         locate_params=self.tp_params,
-                                         maxrange=self.maxrange,
-                                         nfringes=self.nfringes)
-                # TODO: Add tensorflow capability
-                else:
-                    raise(ValueError("method must be either \'oat\' or \'tf\'"))
-                for feature in features:
-                    feature = np.append(feature, frame_no)
-                    self._write(feature, self.unlinked_df, dest)
-                frame_no += 1
-            except Exception as err:
-                print(err)
-                logging.warning("Ending progress...")
+            if frame_no == maxframe:
                 break
+            ret, frame = cap.read()
+            if ret is False:
+                break
+            norm = self._process(frame)
+            if self.detection_method == 'oat':
+                features, circ = oat(norm, frame_no,
+                                     locate_params=self.tp_params,
+                                     maxrange=self.maxrange,
+                                     nfringes=self.nfringes)
+            # TODO: Add tensorflow capability
+            else:
+                raise(ValueError("method must be either \'oat\' or \'tf\'"))
+            for feature in features:
+                feature = np.append(feature, frame_no)
+                self._write(feature, self.unlinked_df, dest)
+            frame_no += 1
         cap.release()
         self.linked_df = tp.link(self.unlinked_df, search_range=20, memory=3,
                                  pos_columns=['y', 'x'])
+        print(self.linked_df)
         if self.save:
             self.linked_df.to_csv(dest)
         self.trajectories = self._separate(self.linked_df)
@@ -201,7 +198,7 @@ class VideoFitter(object):
         '''
         idx = trajectory_no
         split = self.fn.split("/")
-        dest = split[:-1] + "fit_df" + str(idx) + "_" + split[-1][:-4] + ".csv"
+        dest = "fit_df" + str(idx) + "_" + split[-1][:-4] + ".csv"
         cap = cv2.VideoCapture(self.fn)
         if type(minframe) == int:
             cap.set(1, minframe)
@@ -212,62 +209,56 @@ class VideoFitter(object):
         self.fit_dfs[idx] = pd.DataFrame(columns=cols)
         p_df = self.trajectories[idx]
         while(cap.isOpened()):
-            try:
-                if frame_no == maxframe:
-                    break
-                ret, frame = cap.read()
-                if ret is False:
-                    logging.warning("Frame not read.")
-                    break
-                norm = self._process(frame)
-                # Crop feature of interest.
-                feats = p_df.loc[p_df['frame'] == frame_no]
-                if len(feats) == 0:
-                    logging.warning('No particle found in frame {}'.format(frame_no))
-                    frame_no += 1
-                    continue
-                x, y, w, h, frame, particle = feats.iloc[0]
-                feature = self._crop(norm, x, y, w, h)
-                # Fit frame
-                start = time()
-                fit = self.fitter.fit(feature)
-                msg = "{} time to fit frame {}: {:.2f}".format(split[-1][:-4],
-                                                               frame_no,
-                                                               time() - start)
-                msg += "\nredchi={:.2f}".format(fit.redchi)
-                msg += ", z={:.2f}, a_p={:.2f}, n_p={:.2f}".format(fit.redchi,
-                                                                   fit.params['z'].value,
-                                                                   fit.params['a_p'].value,
-                                                                   fit.params['n_p'].value)
-                logging.info(msg)
-                # Add fit to dataset
-                row = []
-                for col in cols:
-                    if col == 'x':
-                        row.append(fit.params[col].value + x)
-                    elif col == 'y':
-                        row.append(fit.params[col].value + y)
-                    elif col == 'frame':
-                        row.append(frame_no)
-                    elif col == 'redchi':
-                        row.append(fit.redchi)
-                    else:
-                        row.append(fit.params[col].value)
-                self._write(row, self.fit_dfs[idx], dest)
-                frame_no += 1
-                # Set guesses for next fit
-                # TODO: Replace with tensorflow estimates
-                guesses = []
-                for param in fit.params.values():
-                    if param.name in fixed_guess.keys():
-                        guesses.append(fixed_guess[param.name])
-                    else:
-                        guesses.append(param.value)
-                self.params = guesses
-            except Exception as err:
-                print(err)
-                logging.warning("Ending progress...")
+            if frame_no == maxframe:
                 break
+            ret, frame = cap.read()
+            if ret is False:
+                logging.warning("Frame not read.")
+                break
+            norm = self._process(frame)
+            # Crop feature of interest.
+            feats = p_df.loc[p_df['frame'] == frame_no]
+            if len(feats) == 0:
+                logging.warning('No particle found in frame {}'.format(frame_no))
+                frame_no += 1
+                continue
+            x, y, w, h, frame, particle = feats.iloc[0]
+            feature = self._crop(norm, x, y, w, h)
+            # Fit frame
+            start = time()
+            fit = self.fitter.fit(feature)
+            msg = "{} time to fit frame {}: {:.2f}".format(split[-1][:-4],
+                                                           frame_no,
+                                                           time() - start)
+            msg += "\nz={:.2f}, a_p={:.2f}, n_p={:.2f}".format(fit.params['z'].value,
+                                                               fit.params['a_p'].value,
+                                                               fit.params['n_p'].value)
+            msg += "\nredchi={:.2f}".format(fit.redchi)
+            logging.info(msg)
+            # Add fit to dataset
+            row = []
+            for col in cols:
+                if col == 'x':
+                    row.append(fit.params[col].value + x)
+                elif col == 'y':
+                    row.append(fit.params[col].value + y)
+                elif col == 'frame':
+                    row.append(frame_no)
+                elif col == 'redchi':
+                    row.append(fit.redchi)
+                else:
+                    row.append(fit.params[col].value)
+            self._write(row, self.fit_dfs[idx], dest)
+            frame_no += 1
+            # Set guesses for next fit
+            # TODO: Replace with tensorflow estimates
+            guesses = []
+            for param in fit.params.values():
+                if param.name in fixed_guess.keys():
+                    guesses.append(fixed_guess[param.name])
+                else:
+                    guesses.append(param.value)
+            self.params = guesses
         if self.save:
             self.fit_dfs[idx].to_csv(dest)
         cap.release()
@@ -306,7 +297,8 @@ class VideoFitter(object):
             Raw frame from camera
         '''
         p_df = self.trajectories[trajectory_no]
-        if frame_no > max(p_df.index) or frame_no < min(p_df.index):
+        print(min(p_df['frame']))
+        if frame_no > max(p_df['frame']) and frame_no < min(p_df['frame']):
             raise(IndexError("Trajectory not found in frame {} for particle {}"
                              .format(frame_no, trajectory_no)))
         cap = cv2.VideoCapture(self.fn)
@@ -323,15 +315,16 @@ class VideoFitter(object):
         # Generate guess
         x, y, z, a_p, n_p, n_m, mpp, lamb = guesses
         h = LMHologram(coordinates=coordinates(feature.shape))
-        h.particle.r_p = [x, y, z]
+        h.particle.r_p = [x+feature.shape[0]//2, y+feature.shape[1]//2, z]
         h.particle.a_p = a_p
         h.particle.n_p = n_p
         h.instrument.n_m = n_m
         h.instrument.magnification = mpp
         h.instrument.wavelength = lamb
         hol = h.hologram().reshape(feature.shape)
+        residual = (feature - hol)
         # Plot and return normalized image
-        plt.imshow(np.hstack([feature, hol, feature - hol]), cmap='gray')
+        plt.imshow(np.hstack([feature, hol, residual]), cmap='gray')
         plt.show()
         cap.release()
         return norm
@@ -366,7 +359,7 @@ class VideoFitter(object):
             norm = (frame - self.dark_count) / (self.background - self.dark_count)
         else:
             norm = frame / np.mean(frame)
-        if type(self.forced_crop) is list or tuple:
+        if type(self.forced_crop) is list or type(self.forced_crop) is tuple:
             if len(self.forced_crop) == 4:
                 xc, yc, w, h = self.forced_crop
                 norm = self._crop(norm, xc, yc, w, h, square=False)

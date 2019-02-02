@@ -6,6 +6,9 @@ import trackpy as tp
 import numpy as np
 from time import time
 import cv2
+import logging
+logger = logging.getLogger()
+logger.setLevel(logging.INFO)
 
 
 def oat(norm, frame_no=None,
@@ -38,9 +41,8 @@ def oat(norm, frame_no=None,
     msg = "Time to find {} features".format(features.shape[0])
     if type(frame_no) is int:
         msg += " at frame {}".format(frame_no)
-    msg += ": {:02}".format(time() - t)
-    print(msg)
-    print("Last feature size: {}".format(s))
+    msg += ": {:.2f}".format(time() - t)
+    logging.info(msg + "\nLast feature size: {}".format(s))
     return features, circ
 
 
