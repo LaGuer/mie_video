@@ -1,14 +1,14 @@
 '''Nifty module for methods involving OpenCV. Includes a method
 to grab a background image from a file'''
-'''
+
 import cv2
 import numpy as np
 
 
 def background(fn, shape=(640, 480)):
-    
+    '''
     Return a background image from a video file
-    
+
     Args:
         fn: video filename
     Keywords:
@@ -16,10 +16,10 @@ def background(fn, shape=(640, 480)):
     Returns:
         bg: background image represented by np.ndarray
             of size shape
-    
+    '''
     count = count_frames(fn)
     n_frames = min(count, 200)
-    frames = np.zeros((n_frames, shape[0], shape[1]),
+    frames = np.zeros((n_frames, shape[1], shape[0]),
                       dtype=np.float_)
     frame_nos = range(count)
     for idx in range(n_frames):
@@ -36,20 +36,31 @@ def background(fn, shape=(640, 480)):
             ret, rand_frame = cap.read()
             attempt += 1
         if rand_frame is not None:
-            rand_frame = cv2.cvtColor(rand_frame, cv2.COLOR_BGR2GRAY)
-            frames[idx] = rand_frame
+            frames[idx] = cv2.cvtColor(rand_frame, cv2.COLOR_BGR2GRAY)
     bg = np.median(frames, axis=0)
     return bg
 
 
 def count_frames(path):
-    Gets the number of frames in a video
-    
+    '''Gets the number of frames in a video
+    '''
     video = cv2.VideoCapture(path)
     total = 0
-    if cv2.__version__.startswith('3.'):
+    version = cv2.__version__
+    if version.startswith('3.') or version.startswith('4.'):
         total = int(video.get(cv2.CAP_PROP_FRAME_COUNT))
     else:
         total = int(video.get(cv2.cv.CV_CAP_PROP_FRAME_COUNT))
     return total
-'''
+
+
+def inflate(image):
+    '''
+    Returns a RGB image from a BW image.
+    '''
+    shape = image.shape
+    new_image = np.zeros([shape[0], shape[1], 3])
+    new_image[:, :, 0] = image
+    new_image[:, :, 1] = image
+    new_image[:, :, 2] = image
+    return new_image

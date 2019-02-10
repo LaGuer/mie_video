@@ -4,7 +4,6 @@ from mie_video.utilities.h5video import TagArray
 from mie_video.utilities.circletransform import circletransform
 import trackpy as tp
 import numpy as np
-from time import time
 import cv2
 import logging
 logger = logging.getLogger()
@@ -20,7 +19,6 @@ def oat(norm, frame_no=None,
     '''
     Use the orientational alignment transform
     on every pixel of an image and return features.'''
-    t = time()
     circ = circletransform(norm, theory='orientTrans')
     circ = circ / np.amax(circ)
     circ = TagArray(circ, frame_no=frame_no)
@@ -38,11 +36,6 @@ def oat(norm, frame_no=None,
             s = crop_threshold
         features[idx][2] = s
         features[idx][3] = s
-    msg = "Time to find {} features".format(features.shape[0])
-    if type(frame_no) is int:
-        msg += " at frame {}".format(frame_no)
-    msg += ": {:.2f}".format(time() - t)
-    logging.info(msg + "\nLast feature size: {}".format(s))
     return features, circ
 
 

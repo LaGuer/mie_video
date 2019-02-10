@@ -1,7 +1,8 @@
 '''Class to fit trajectories in a video to Lorenz-Mie theory.'''
 
 import mie_video.utilities.editing as edit
-from mie_video.tracking import oat
+from mie_video.tracking import oat, feature_extent
+from CNNLorenzMie.Localizer import Localizer
 from .animation import Animate
 from pylorenzmie.fitting.mie_fit import Mie_Fitter
 from pylorenzmie.lmtool.LMTool import LMTool
@@ -17,10 +18,19 @@ from collections import OrderedDict
 import os
 import sys
 from time import time
+import signal
 import logging
 logger = logging.getLogger()
 logger.setLevel(logging.WARNING)
 logger.setLevel(logging.INFO)
+
+
+def handler(signum, frame):
+    raise(TimeoutError("Function timed out."))
+
+
+signal.signal(signal.SIGALRM, handler)
+signal.alarm(0)
 
 
 class VideoFitter(object):
@@ -31,7 +41,8 @@ class VideoFitter(object):
                                          (None for n in range(8)))),
                  background=None,
                  linked_df=None,
-                 detection_method='oat',
+                 detection_method='cnn',
+                 localizer=None,
                  save=False):
         """
         Args:
@@ -42,13 +53,13 @@ class VideoFitter(object):
         Keywords:
             background: background image or filename of a background video
             detection_method: 'oat': Oriental alignment transform
-                              'tf': Tensorflow (you must use 640x480 frames)
+                              'cnn': CNNLorenzMie localizer
             linked_df: input if linked_df has already been calculated and saved
         """
         self.save = save
         self.init_processing(fn, background)
         self.init_fitting(guesses)
-        self.init_localization(linked_df, detection_method)
+        self.init_localization(linked_df, detection_method, localizer)
 
     def init_processing(self, fn, background):
         """
@@ -59,15 +70,18 @@ class VideoFitter(object):
         self.dark_count = 13
         self.frame_size = (1024, 1280)
         self.forced_crop = None
-        if type(background) is str and background[:-4] == '.avi':
+        if type(background) is str and background[-4:] == '.avi':
+            frame_size = tuple(reversed(self.frame_size))
+            signal.alarm(60)
             self.background = edit.background(background,
-                                              shape=self.frame_size)
+                                              shape=frame_size)
+            signal.alarm(0)
         elif type(background) is np.ndarray or background is None:
             self.background = background
         else:
             raise(ValueError("background must be .avi filename, np.ndarray, or None."))
 
-    def init_localization(self, linked_df, detection_method):
+    def init_localization(self, linked_df, detection_method, localizer):
         """
         Initialize parameters for detection.
 
@@ -78,11 +92,16 @@ class VideoFitter(object):
         self.detection_method = detection_method
         self.linked_df = linked_df
         self.trajectories = None
+        self.nfringes = 25
+        self.maxrange = 375.
+        self.crop_threshold = 350.
         if self.detection_method == 'oat':
-            self.nfringes = 25
-            self.maxrange = 300.
             self.tp_params = {'diameter': 31, 'topn': 1}
-            self.crop_threshold = 300.
+        elif self.detection_method == 'cnn':
+            if localizer is None:
+                self.localizer = Localizer()
+            else:
+                self.localizer = localizer
         if type(self.linked_df) is pd.DataFrame:
             self.linked_df = self.linked_df[['x', 'y', 'w', 'h',
                                              'frame', 'particle']]
@@ -148,8 +167,9 @@ class VideoFitter(object):
         '''
         if type(self.linked_df) is pd.DataFrame:
             return
-        split = self.fn.split("/")
-        dest = "linked_df_" + split[-1][:-4] + ".csv"
+        c = "/"
+        split = self.fn.split(c)
+        dest = c.join(split[:-1]) + "/linked_df_" + split[-1][:-4] + ".csv"
         cap = cv2.VideoCapture(self.fn)
         if type(minframe) == int:
             cap.set(1, minframe)
@@ -164,15 +184,32 @@ class VideoFitter(object):
             ret, frame = cap.read()
             if ret is False:
                 break
-            norm = self._process(frame)
+            t = time()
             if self.detection_method == 'oat':
+                norm = self._process(frame)
                 features, circ = oat(norm, frame_no,
                                      locate_params=self.tp_params,
                                      maxrange=self.maxrange,
                                      nfringes=self.nfringes)
-            # TODO: Add tensorflow capability
+                s = features[-1][2]
+            elif self.detection_method == 'cnn':
+                norm = self._process(frame)
+                features = []
+                feats = self.localizer.predict([edit.inflate(norm)*100])
+                for feature in feats[0]:
+                    xc, yc, w, h = feature['bbox']
+                    s = feature_extent(norm, (xc, yc),
+                                       nfringes=self.nfringes,
+                                       maxrange=self.maxrange)
+                    if s > self.crop_threshold:
+                        s = self.crop_threshold
+                    features.append([xc, yc, s, s])
             else:
-                raise(ValueError("method must be either \'oat\' or \'tf\'"))
+                raise(ValueError("method must be either \'oat\' or \'cnn\'"))
+            msg = "Time to find {} features".format(len(features))
+            msg += " at frame {}".format(frame_no)
+            msg += ": {:.2f}".format(time() - t)
+            logging.info(msg + "\nLast feature size: {}".format(s))
             for feature in features:
                 feature = np.append(feature, frame_no)
                 self._write(feature, self.unlinked_df, dest)
@@ -180,7 +217,6 @@ class VideoFitter(object):
         cap.release()
         self.linked_df = tp.link(self.unlinked_df, search_range=20, memory=3,
                                  pos_columns=['y', 'x'])
-        print(self.linked_df)
         if self.save:
             self.linked_df.to_csv(dest)
         self.trajectories = self._separate(self.linked_df)
@@ -197,8 +233,9 @@ class VideoFitter(object):
             trajectory_no: index of particle trajectory in self.trajectories.
         '''
         idx = trajectory_no
-        split = self.fn.split("/")
-        dest = "fit_df" + str(idx) + "_" + split[-1][:-4] + ".csv"
+        c = "/"
+        split = self.fn.split(c)
+        dest = c.join(split[:-1]) + "/fit_df" + str(idx) + "_" + split[-1][:-4] + ".csv"
         cap = cv2.VideoCapture(self.fn)
         if type(minframe) == int:
             cap.set(1, minframe)
@@ -219,14 +256,21 @@ class VideoFitter(object):
             # Crop feature of interest.
             feats = p_df.loc[p_df['frame'] == frame_no]
             if len(feats) == 0:
-                logging.warning('No particle found in frame {}'.format(frame_no))
+                logging.warning('No particle found in frame {}'.
+                                format(frame_no))
                 frame_no += 1
                 continue
             x, y, w, h, frame, particle = feats.iloc[0]
             feature = self._crop(norm, x, y, w, h)
             # Fit frame
+            signal.alarm(40)
             start = time()
-            fit = self.fitter.fit(feature)
+            try:
+                fit = self.fitter.fit(feature)
+            except TimeoutError:
+                logging.warning("Fit timed out")
+                continue
+            signal.alarm(0)
             msg = "{} time to fit frame {}: {:.2f}".format(split[-1][:-4],
                                                            frame_no,
                                                            time() - start)
@@ -345,16 +389,15 @@ class VideoFitter(object):
         last_line = df.index.max()
         if last_line is np.nan:
             df.loc[0] = row
-            if self.save:
-                df.to_csv(dest, mode='a')
+        #    if self.save:
+        #        df.to_csv(dest, mode='a')
         else:
             df.loc[last_line + 1] = row
-            if self.save:
-                df.to_csv(dest, mode='a', header=None)
+        #    if self.save:
+        #        df.to_csv(dest, mode='a', header=None)
 
     def _process(self, frame):
-        frame = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-        frame = frame.astype(np.float)
+        frame = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY).astype(np.float)
         if self.background is not None:
             norm = (frame - self.dark_count) / (self.background - self.dark_count)
         else:
