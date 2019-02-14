@@ -1,9 +1,9 @@
 '''Class to fit trajectories in a video to Lorenz-Mie theory.'''
 
-import mie_video.utilities.editing as edit
-from mie_video.tracking import oat, feature_extent
+import mie_video.editing as editing
+from mie_video.localization.localize import localize, feature_extent
 from CNNLorenzMie.Localizer import Localizer
-from .animation import Animate
+from mie_video.animation import Animate
 from pylorenzmie.fitting.mie_fit import Mie_Fitter
 from pylorenzmie.lmtool.LMTool import LMTool
 from pylorenzmie.theory.LMHologram import LMHologram
@@ -52,7 +52,7 @@ class VideoFitter(object):
                      to find a good estimate
         Keywords:
             background: background image or filename of a background video
-            detection_method: 'oat': Oriental alignment transform
+            detection_method: 'circletransform': circletransform
                               'cnn': CNNLorenzMie localizer
             linked_df: input if linked_df has already been calculated and saved
         """
@@ -73,8 +73,8 @@ class VideoFitter(object):
         if type(background) is str and background[-4:] == '.avi':
             frame_size = tuple(reversed(self.frame_size))
             signal.alarm(60)
-            self.background = edit.background(background,
-                                              shape=frame_size)
+            self.background = editing.background(background,
+                                                 shape=frame_size)
             signal.alarm(0)
         elif type(background) is np.ndarray or background is None:
             self.background = background
@@ -95,7 +95,7 @@ class VideoFitter(object):
         self.nfringes = 25
         self.maxrange = 375.
         self.crop_threshold = 350.
-        if self.detection_method == 'oat':
+        if self.detection_method == 'circletransform':
             self.tp_params = {'diameter': 31, 'topn': 1}
         elif self.detection_method == 'cnn':
             if localizer is None:
@@ -185,17 +185,17 @@ class VideoFitter(object):
             if ret is False:
                 break
             t = time()
-            if self.detection_method == 'oat':
+            if self.detection_method == 'circletransform':
                 norm = self._process(frame)
-                features, circ = oat(norm, frame_no,
-                                     locate_params=self.tp_params,
-                                     maxrange=self.maxrange,
-                                     nfringes=self.nfringes)
+                features, circ = localize(norm, frame_no,
+                                          locate_params=self.tp_params,
+                                          maxrange=self.maxrange,
+                                          nfringes=self.nfringes)
                 s = features[-1][2]
             elif self.detection_method == 'cnn':
                 norm = self._process(frame)
                 features = []
-                feats = self.localizer.predict([edit.inflate(norm)*100])
+                feats = self.localizer.predict([editing.inflate(norm)*100])
                 for feature in feats[0]:
                     xc, yc, w, h = feature['bbox']
                     s = feature_extent(norm, (xc, yc),
@@ -205,7 +205,7 @@ class VideoFitter(object):
                         s = self.crop_threshold
                     features.append([xc, yc, s, s])
             else:
-                raise(ValueError("method must be either \'oat\' or \'cnn\'"))
+                raise(ValueError("method must be either \'circletransform\' or \'cnn\'"))
             msg = "Time to find {} features".format(len(features))
             msg += " at frame {}".format(frame_no)
             msg += ": {:.2f}".format(time() - t)
@@ -263,7 +263,7 @@ class VideoFitter(object):
             x, y, w, h, frame, particle = feats.iloc[0]
             feature = self._crop(norm, x, y, w, h)
             # Fit frame
-            signal.alarm(40)
+            signal.alarm(60)
             start = time()
             try:
                 fit = self.fitter.fit(feature)

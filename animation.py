@@ -1,4 +1,4 @@
-from mie_video.tracking import oat
+from mie_video.localization.localize import localize
 import cv2
 from matplotlib import animation
 from matplotlib.patches import Rectangle
@@ -11,7 +11,7 @@ class Animate(object):
     """
 
     def __init__(self, video_fn, dest='test_anim.avi', save=True,
-                 method='oat', linked_df=None, bg=1.,
+                 method='circletransform', linked_df=None, bg=1.,
                  **kwargs):
         # I/O
         self.video_fn = video_fn
@@ -66,11 +66,11 @@ class Animate(object):
         if ret:
             frame = self.process(frame)
             if self.df is None:
-                if self.method == 'oat':
-                    features, frame_ct = oat(frame, self.frame_no,
-                                             nfringes=25)
+                if self.method == 'circletransform':
+                    features, frame_ct = localize(frame, self.frame_no,
+                                                  nfringes=25)
                 else:
-                    raise(ValueError("method must be either \'oat\' or \'tf\'"))
+                    raise(ValueError("method must be either \'circletransform\' or \'tf\'"))
             else:
                 features = self.df.loc[self.df.frame == self.frame_no]
                 features = np.array(self.df[['x', 'y', 'w', 'h']])

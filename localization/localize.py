@@ -1,25 +1,26 @@
 '''Module for localizing particle trajectories with tensorflow tracking.'''
 
-from mie_video.utilities.h5video import TagArray
-from mie_video.utilities.circletransform import circletransform
+from mie_video.localization.h5video import TagArray
+from mie_video.localization.circletransform import circletransform
 import trackpy as tp
 import numpy as np
-import cv2
-import logging
-logger = logging.getLogger()
-logger.setLevel(logging.INFO)
 
 
-def oat(norm, frame_no=None,
-        locate_params={'diameter': 31,
-                       'minmass': 30.},
-        nfringes=25,
-        maxrange=400.,
-        crop_threshold=None):
+def localize(image, frame_no=None,
+             locate_params={'diameter': 31,
+                            'minmass': 30.},
+             nfringes=25,
+             maxrange=400.,
+             crop_threshold=None):
     '''
-    Use the orientational alignment transform
-    on every pixel of an image and return features.'''
-    circ = circletransform(norm, theory='orientTrans')
+    Localize features in image using circletransform
+    and trackpy.locate
+    on every pixel of an image and return features.
+    
+    Args:
+        image: normalized image with median near 1.
+    '''
+    circ = circletransform(image, theory='orientTrans')
     circ = circ / np.amax(circ)
     circ = TagArray(circ, frame_no=frame_no)
     feats = tp.locate(circ,
@@ -29,7 +30,7 @@ def oat(norm, frame_no=None,
     feats['h'] = 400.
     features = np.array(feats[['x', 'y', 'w', 'h']])
     for idx, feature in enumerate(features):
-        s = feature_extent(norm, (feature[0], feature[1]),
+        s = feature_extent(image, (feature[0], feature[1]),
                            nfringes=nfringes,
                            maxrange=maxrange)
         if crop_threshold is not None and s > crop_threshold:
@@ -62,6 +63,18 @@ def aziavg(data, center):
 
 
 if __name__ == '__main__':
-    data = cv2.imread('sample.png', cv2.IMREAD_GRAYSCALE).astype(float)
+    import cv2
+    import matplotlib.pyplot as plt
+    from matplotlib.patches import Rectangle
+    data = cv2.imread('../sample.png', cv2.IMREAD_GRAYSCALE).astype(float)
     data /= np.mean(data)
-    oat(data)
+    features, circ = localize(data, nfringes=30)
+    fig, ax = plt.subplots()
+    ax.imshow(circ, cmap='gray')
+    for feature in features:
+        x, y, w, h = feature
+        rect = Rectangle(xy=(x - w/2, y - h/2), width=w, height=h,
+                         fill=False, linewidth=3, edgecolor='r')
+        ax.add_patch(rect)
+    plt.show()
+    
