@@ -38,7 +38,7 @@ class VideoFitter(object):
                  frame_size=(1024, 1280),
                  background=None,
                  localized_df=None,
-                 detection_method='cnn'
+                 detection_method='cnn',
                  localizer=None):
         """
         Args:
@@ -114,16 +114,10 @@ class VideoFitter(object):
         """
         return self._localized_df
 
-    @localized_df.setter
-    def localized_df(self, localized_df):
-        self._localized_df = localized_df[['x', 'y', 'w', 'h', 'frame', 'particle']]
-        self._fit_dfs = [None for _ in range(len(self.trajectories))]
-        logging.info(str(len(self.trajectories)) + " trajectories found.")
-
     @property
     def trajectories(self):
         """
-        List where an element at index i is a DataFrame 
+        List where an element at index i is a DataFrame
         for particle i's localized trajectory.
         
         Columns:
@@ -134,7 +128,7 @@ class VideoFitter(object):
     @property
     def fit_dfs(self):
         """
-        List where an element at index i is a DataFrame 
+        List where an element at index i is a DataFrame
         for particle i's fitted trajectory.
         
         Columns:
@@ -219,10 +213,13 @@ class VideoFitter(object):
                 self._write(feature, self.unlinked_df, dest)
             frame_no += 1
         cap.release()
-        self.localized_df = tp.link(self.unlinked_df,
+        self._localized_df = tp.link(self.unlinked_df,
                                     search_range=20,
                                     memory=3,
                                     pos_columns=['y', 'x'])
+        self._localized_df = localized_df[['x', 'y', 'w', 'h', 'frame', 'particle']]
+        self._fit_dfs = [None for _ in range(len(self.trajectories))]
+        logging.info(str(len(self.trajectories)) + " trajectories found.")
 
     def fit(self, trajectory_no, maxframe=None, minframe=None):
         '''
