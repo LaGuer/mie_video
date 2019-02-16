@@ -398,3 +398,14 @@ class VideoFitter(object):
         for idx in range(int(trajectories.particle.max()) + 1):
             result.append(trajectories[trajectories.particle == idx])
         return result
+
+
+if __name__ == '__main__':
+    fn = 'sample.avi'
+    fitter = VideoFitter(fn)
+    maxframe = 10
+    fitter.localize(maxframe=maxframe)
+    fitter.fit(0, maxframe=maxframe)
+    fit_df = fitter.fit_dfs[0]
+    fit_df.plot(x=['frame'], kind='scatter')
+    plt.show()
