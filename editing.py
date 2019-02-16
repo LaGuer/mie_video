@@ -5,7 +5,7 @@ import cv2
 import numpy as np
 
 
-def background(fn, shape=(640, 480)):
+def background(fn, shape=(480, 640)):
     '''
     Return a background image from a video file
 
@@ -19,7 +19,7 @@ def background(fn, shape=(640, 480)):
     '''
     count = count_frames(fn)
     n_frames = min(count, 200)
-    frames = np.zeros((n_frames, shape[1], shape[0]),
+    frames = np.zeros((n_frames, shape[0], shape[1]),
                       dtype=np.float_)
     frame_nos = range(count)
     for idx in range(n_frames):

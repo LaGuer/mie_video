@@ -1,7 +1,7 @@
 '''Module for localizing particle trajectories with tensorflow tracking.'''
 
-from mie_video.localization.h5video import TagArray
-from mie_video.localization.circletransform import circletransform
+from mie_video.detection.h5video import TagArray
+from mie_video.detection.circletransform import circletransform
 import trackpy as tp
 import numpy as np
 

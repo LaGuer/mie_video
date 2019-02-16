@@ -1,4 +1,4 @@
-from mie_video.localization.localize import localize
+from pylorenzmie.detection.localize import localize
 import cv2
 from matplotlib import animation
 from matplotlib.patches import Rectangle

@@ -3,8 +3,8 @@ Author: Mark Hannel
 """
 
 import numpy as np
-from mie_video.localization.savgol2d import savgol2d
-from mie_video.localization.edge_convolve import edge_convolve
+from mie_video.detection.savgol2d import savgol2d
+from mie_video.detection.edge_convolve import edge_convolve
 import random
 from builtins import range
 
