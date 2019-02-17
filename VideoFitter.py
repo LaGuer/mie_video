@@ -42,7 +42,7 @@ with open(os.path.join(dir, 'keras_models/predict_stamp_auto.json')) as f:
 class VideoFitter(object):
 
     def __init__(self, fn,
-                 guesses={'r_p': None, 'n_p': None, 'a_p': None},
+                 guesses={'z_p': None, 'n_p': None, 'a_p': None},
                  frame_size=(1024, 1280),
                  background=1.,
                  localized_df=None,
@@ -102,7 +102,7 @@ class VideoFitter(object):
         if detection_method == 'circletransform':
             self.tp_params = {'diameter': 31, 'topn': 1}
         elif detection_method == 'cnn':
-            self._localizer = Localizer() if (localizer is None) else localizer
+            self.localizer = Localizer() if (localizer is None) else localizer
 
     def _init_fitting(self, guesses, estimator):
         """
@@ -195,8 +195,8 @@ class VideoFitter(object):
             elif self._detection_method == 'cnn':
                 norm = self._process(frame)
                 features = []
-                feats = self._localizer.predict([editing.inflate(norm)])
-                feats = nodoubles(feats, tol=15)
+                feats = self.localizer.predict([editing.inflate(norm)])
+                feats = nodoubles(feats, tol=20)
                 bboxs = []
                 for feature in feats[0]:
                     xc, yc, w, h = feature['bbox']
@@ -297,9 +297,9 @@ class VideoFitter(object):
             row = [frame_no, result.redchi]
             for key in reversed(self.fitter._keys):
                 value = result.params[key].value
-                value = value - xc + x if key == 'x' else value
-                value = value - yc + y if key == 'y' else value
-                row.insert(0, result.params[key].value)
+                value = value - xc + x if key == 'x_p' else value
+                value = value - yc + y if key == 'y_p' else value
+                row.insert(0, value)
             self._write(row, self.fit_dfs[idx])
             frame_no += 1
         cap.release()
@@ -325,19 +325,17 @@ class VideoFitter(object):
         lmtool.show()
         sys.exit(app.exec_())
 
-    def compare(self, guesses, trajectory_no=0, frame_no=0):
+    def compare(self, trajectory_no=0, frame_no=0):
         '''
-        Plot guessed image vs. image of a trajectory at a given frame
-        
-        Args:
-            guesses: list of parameters ordered
-                     [x, y, z, a_p, n_p, n_m, mpp, lamb]
+        Plot guessed image vs. image of a trajectory at a given frame.
+        Use after running localize() with the selected frame in range.
         Keywords:
             trajectory: index of trajectory in self.trajectory
             frame_no: index of frame to test
         Returns:
             Raw frame from camera
         '''
+        from lmfit import report_fit
         p_df = self.trajectories[trajectory_no]
         if frame_no > max(p_df['frame']) and frame_no < min(p_df['frame']):
             raise(IndexError("Trajectory not found in frame {} for particle {}"
@@ -353,14 +351,21 @@ class VideoFitter(object):
         feats = p_df.loc[p_df['frame'] == frame_no]
         x, y, w, h, frame, particle = feats.iloc[0]
         feature = self._crop(norm, x, y, w, h)
+        feature /= np.mean(feature)
         # Generate guess
-        hol = self.fitter.model.hologram().reshape(feature.shape)
-        residual = (feature - hol)
+        xc, yc = feature[0].size / 2, feature[1].size / 2
+        self.particle.x_p, self.particle.y_p = (xc, yc)
+        self.fitter.model.coordinates = coordinates(feature.shape)
+        self.fitter.data = feature.reshape(feature.size)
+        result = self.fitter.optimize()
+        fit = self.fitter.model.hologram().reshape(feature.shape)
+        residual = self.fitter.residuals().reshape(feature.shape)
         # Plot and return normalized image
-        plt.imshow(np.hstack([feature, hol, residual]), cmap='gray')
+        report_fit(result)
+        plt.imshow(np.hstack([feature, fit, residual*self.fitter.noise]),
+                   cmap='gray')
         plt.show()
         cap.release()
-        return norm
 
     def animate(self):
         '''
@@ -383,10 +388,10 @@ class VideoFitter(object):
 
     def _process(self, frame):
         frame = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY).astype(np.float)
-        median = np.median(frame)
+        mean = np.mean(frame)
         dc = self.instrument.dark_count
         bg = self.instrument.background
-        norm = [(frame - dc) / (bg - dc)]*median if bg != 1. else frame
+        norm = ((frame - dc) / (bg - dc))*mean if type(bg) == np.ndarray else frame
         if type(self.forced_crop) is list or type(self.forced_crop) is tuple:
             if len(self.forced_crop) == 4:
                 xc, yc, w, h = self.forced_crop
@@ -416,13 +421,32 @@ class VideoFitter(object):
 
 
 if __name__ == '__main__':
-    fn = 'sample.avi'
-    fitter = VideoFitter(fn, estimator=True)
-    maxframe = 4
+    '''
+    Use to test initial frame of a video
+    
+    Command line args:
+       1: filename
+       2: background filename or 1 if no background
+       2: a_p guess
+       3: n_p guess
+       4: z_p guess       
+    '''
+    args = sys.argv
+    if len(args) > 1:
+        fn = args[1]
+        bg = args[2]
+        a_p, n_p, r_p = [float(args[3]),
+                         float(args[4]),
+                         [0, 0, float(args[5])]]
+        trajectory_no = 1
+    else:
+        fn = 'sample.avi'
+        a_p, n_p, r_p = [.8, 1.41, [0, 0, 110]]
+        bg = 1.
+        trajectory_no = 0
+    guesses = {'a_p': a_p, 'n_p': n_p, 'r_p': r_p}
+    fitter = VideoFitter(fn, guesses=guesses, background=bg)
+    maxframe = 1
+    fitter.nfringes = 18
     fitter.localize(maxframe=maxframe)
-    fitter.fit(0, maxframe=maxframe)
-    fit_df = fitter.fit_dfs[0]
-    fig, ax = plt.subplots(2)
-    ax[0].scatter(x=fit_df.index, y=fit_df.a_p)
-    ax[1].scatter(x=fit_df.index, y=fit_df.n_p)
-    plt.show()
+    fitter.compare(trajectory_no, frame_no=maxframe-1)
