@@ -350,6 +350,16 @@ class VideoFitter(object):
         # Crop feature
         feats = p_df.loc[p_df['frame'] == frame_no]
         x, y, w, h, frame, particle = feats.iloc[0]
+        if self._estimator is not None:
+            stamp = self._crop(norm, x, y, 201, 201)
+            data = self._estimator.predict(img_list=[stamp])
+            self.particle.z_p = data['z_p'][0]
+            self.particle.a_p = data['a_p'][0]
+            self.particle.n_p = data['n_p'][0]
+            msg = "Estimator guesses: z_p={:.2f}, a_p={:.2f}, n_p={:.2f}"
+            logging.info(msg.format(self.particle.z_p,
+                                    self.particle.a_p,
+                                    self.particle.n_p))
         feature = self._crop(norm, x, y, w, h)
         feature /= np.mean(feature)
         # Generate guess
@@ -439,14 +449,18 @@ if __name__ == '__main__':
                          float(args[4]),
                          [0, 0, float(args[5])]]
         trajectory_no = 1
+        estimator = False
     else:
-        fn = 'sample.avi'
-        a_p, n_p, r_p = [.8, 1.41, [0, 0, 110]]
+        fn = 'sample.png'
+        a_p, n_p, r_p = [None, None, None]
         bg = 1.
         trajectory_no = 0
+        estimator = True
     guesses = {'a_p': a_p, 'n_p': n_p, 'r_p': r_p}
-    fitter = VideoFitter(fn, guesses=guesses, background=bg)
+    fitter = VideoFitter(fn, guesses=guesses,
+                         background=bg,
+                         estimator=estimator)
     maxframe = 1
-    fitter.nfringes = 18
+    fitter.nfringes = 35
     fitter.localize(maxframe=maxframe)
     fitter.compare(trajectory_no, frame_no=maxframe-1)
