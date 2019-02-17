@@ -42,7 +42,7 @@ with open(os.path.join(dir, 'keras_models/predict_stamp_auto.json')) as f:
 class VideoFitter(object):
 
     def __init__(self, fn,
-                 guesses={'z_p': None, 'n_p': None, 'a_p': None},
+                 guesses={'r_p': None, 'n_p': None, 'a_p': None},
                  frame_size=(1024, 1280),
                  background=1.,
                  localized_df=None,
